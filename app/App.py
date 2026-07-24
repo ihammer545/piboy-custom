@@ -57,6 +57,21 @@ class App(ABC):
         """Called when the 'b' key is pressed. Apps can change their state if they want for the next draw call."""
         pass
 
+    def on_tap(self, x: int, y: int) -> bool:
+        """
+        Handle a tap in app-local coordinates (origin at top-left of app content area).
+        Return True if the tap was handled.
+        """
+        return False
+
+    def on_digit(self, digit: str) -> bool:
+        """Optional digit shortcut (0-9). Return True if handled."""
+        return False
+
+    def on_backspace(self) -> bool:
+        """Optional backspace shortcut. Return True if handled."""
+        return False
+
     def on_app_enter(self):
         """Called when entering the app. Apps can perform initial actions here."""
         pass
@@ -64,7 +79,6 @@ class App(ABC):
     def on_app_leave(self):
         """Called when leaving the app. Apps can perform cleanup actions here."""
         pass
-
 
 class SelfUpdatingApp(App, ABC):
     """App template, that can update itself at a fixed refresh time."""

@@ -48,6 +48,15 @@ Supports zooming and moving the map around. Don't get lost in the wasteland.
 
 ![map](docs/apps/map.png)
 
+## Shelter terminal (fork notes)
+
+This fork adds a stationary shelter-terminal MVP (`feature/shelter-terminal-mvp`) and
+touch input (`feature/touch-input`).
+
+- Display target: **800×480**, landscape
+- Dev: `.venv/bin/python piboy_dev.py` — canvas tap = finger; right panel = simulator only
+- Touch / keyboard configuration: see [docs/TOUCH.md](docs/TOUCH.md)
+
 ## Hardware
 
 Base:

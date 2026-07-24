@@ -4,9 +4,10 @@ from injector import inject
 from PIL import Image, ImageDraw
 
 from app.App import SelfUpdatingApp
-from app.ui_kit import button_row, draw_button, fit_text
+from app.ui_kit import button_row, draw_button, fit_text, make_hit
 from core.decorator import override
 from environment import AppConfig
+from interaction.touch.events import HitTarget, Rect, hit_test
 from ports.intercom import CallPhase, PeerPresence
 from services.terminal import IntercomService
 
@@ -23,6 +24,9 @@ class IntercomApp(SelfUpdatingApp):
         self.__selected = 0
         self.__focus_action = 0  # 0=list, 1+=actions
         self.__actions = ['Вызов', 'Принять', 'Отклонить', 'Завершить']
+        self.__action_ids = ['call', 'accept', 'reject', 'hangup']
+        self.__hits: list[HitTarget] = []
+        self.__pressed_action: str | None = None
 
     @property
     @override
@@ -34,6 +38,24 @@ class IntercomApp(SelfUpdatingApp):
     def refresh_time(self) -> float:
         return 0.5
 
+    def __run_action(self, action_id: str):
+        peers = self.__intercom.peers()
+        if not peers:
+            return
+        peer = peers[self.__selected % len(peers)]
+        if action_id == 'call':
+            self.__intercom.start_call(peer.peer_id)
+        elif action_id == 'accept':
+            self.__intercom.accept()
+        elif action_id == 'reject':
+            self.__intercom.reject()
+        elif action_id == 'hangup':
+            self.__intercom.hang_up()
+        elif action_id.startswith('peer:'):
+            idx = int(action_id.split(':', 1)[1])
+            self.__selected = idx
+            self.__focus_action = 0
+
     @override
     def draw(self, image: Image.Image, partial=False) -> Generator[tuple[Image.Image, int, int], Any, None]:
         draw = ImageDraw.Draw(image)
@@ -43,13 +65,14 @@ class IntercomApp(SelfUpdatingApp):
         font = cfg.font_standard
         header_font = cfg.font_header
         accent, dark, bg = cfg.accent, cfg.accent_dark, cfg.background
+        self.__hits = []
 
         draw.text((layout.pad, layout.pad), 'СВЯЗЬ — интерком убежища', fill=accent, font=header_font)
 
         peers = self.__intercom.peers()
         session = self.__intercom.session()
         y = layout.pad + layout.line_height + layout.gap
-        row_h = layout.list_row_height
+        row_h = max(layout.list_row_height, layout.button_min_height)
 
         for index, peer in enumerate(peers):
             selected = index == self.__selected and self.__focus_action == 0
@@ -64,6 +87,8 @@ class IntercomApp(SelfUpdatingApp):
                 phase_hint = ' · свободен'
             line = fit_text(font, f'{peer.name}  [{presence}]{phase_hint}', width - 2 * layout.pad - 8)
             draw.text((layout.pad + 6, y + (row_h - layout.line_height) // 2), line, fill=accent, font=font)
+            self.__hits.append(make_hit(Rect(*row_box), f'peer:{index}',
+                                        min_w=layout.button_min_width, min_h=layout.button_min_height))
             y += row_h + 4
 
         status = fit_text(font, f'Состояние: {session.message or self.__phase_label(session.phase)}',
@@ -73,10 +98,24 @@ class IntercomApp(SelfUpdatingApp):
         btn_y = height - layout.button_min_height - layout.pad
         buttons = button_row(width, btn_y, self.__actions, layout.button_min_width,
                              layout.button_min_height, layout.gap, layout.pad)
+        session_phase = session.phase
+        enabled_map = {
+            'call': session_phase in (CallPhase.IDLE, CallPhase.ENDED),
+            'accept': session_phase == CallPhase.RINGING,
+            'reject': session_phase == CallPhase.RINGING,
+            'hangup': session_phase in (CallPhase.CALLING, CallPhase.CONNECTING, CallPhase.CONNECTED, CallPhase.RINGING),
+        }
         for i, (label, box) in enumerate(buttons):
+            action_id = self.__action_ids[i]
+            enabled = enabled_map.get(action_id, True)
             focused = self.__focus_action == i + 1
-            draw_button(draw, box, label, font, accent, dark, focused, bg)
+            pressed = self.__pressed_action == action_id
+            draw_button(draw, box, label, font, accent, dark, focused=focused, background=bg,
+                        pressed=pressed, disabled=not enabled)
+            self.__hits.append(make_hit(box, action_id, enabled=enabled,
+                                        min_w=layout.button_min_width, min_h=layout.button_min_height))
 
+        self.__pressed_action = None
         yield image, 0, 0
 
     @staticmethod
@@ -89,6 +128,19 @@ class IntercomApp(SelfUpdatingApp):
             CallPhase.CONNECTED: 'разговор',
             CallPhase.ENDED: 'завершён',
         }.get(phase, phase.value)
+
+    @override
+    def on_tap(self, x: int, y: int) -> bool:
+        target = hit_test(self.__hits, x, y)
+        if target is None:
+            return False
+        self.__pressed_action = target.action
+        if target.action.startswith('peer:'):
+            self.__run_action(target.action)
+        else:
+            self.__focus_action = self.__action_ids.index(target.action) + 1
+            self.__run_action(target.action)
+        return True
 
     @override
     def on_key_up(self):
@@ -121,19 +173,15 @@ class IntercomApp(SelfUpdatingApp):
 
     @override
     def on_key_a(self):
-        peers = self.__intercom.peers()
-        if not peers:
-            return
-        peer = peers[self.__selected % len(peers)]
         if self.__focus_action == 0 or self.__focus_action == 1:
-            self.__intercom.start_call(peer.peer_id)
+            self.__run_action('call')
         elif self.__focus_action == 2:
-            self.__intercom.accept()
+            self.__run_action('accept')
         elif self.__focus_action == 3:
-            self.__intercom.reject()
+            self.__run_action('reject')
         elif self.__focus_action == 4:
-            self.__intercom.hang_up()
+            self.__run_action('hangup')
 
     @override
     def on_key_b(self):
-        self.__intercom.hang_up()
+        self.__run_action('hangup')

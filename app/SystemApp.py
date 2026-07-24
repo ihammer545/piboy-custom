@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 from app.App import SelfUpdatingApp
 from app.ui_kit import fit_text
 from core.decorator import override
-from environment import AppConfig
+from environment import AppConfig, Environment
 from services.terminal import SystemService
 
 
@@ -15,10 +15,11 @@ class SystemApp(SelfUpdatingApp):
 
     @inject
     def __init__(self, draw_callback: Callable[[bool], None], system: SystemService,
-                 app_config: AppConfig):
+                 app_config: AppConfig, environment: Environment):
         super().__init__(lambda: draw_callback(True))
         self.__system = system
         self.__app_config = app_config
+        self.__environment = environment
 
     @property
     @override
@@ -39,6 +40,7 @@ class SystemApp(SelfUpdatingApp):
         font = cfg.font_standard
         header = cfg.font_header
         accent = cfg.accent
+        inp = self.__environment.input
 
         draw.text((layout.pad, layout.pad), 'СЕРВИС — состояние терминала', fill=accent, font=header)
 
@@ -50,6 +52,8 @@ class SystemApp(SelfUpdatingApp):
             f'Backend: {status.backend}',
             f'Разрешение: {status.resolution[0]}×{status.resolution[1]}',
             f'Интерфейс: активен',
+            f'Ввод: {inp.mode}',
+            f'Тач: {"вкл" if inp.touch_enabled else "выкл"} ({inp.touch.device})',
             f'Сеть (симулятор): {status.network.value}',
             f'Аудио (симулятор): {status.audio.value}',
             f'Время работы: {hours:02d}:{minutes:02d}:{seconds:02d}',
@@ -64,3 +68,8 @@ class SystemApp(SelfUpdatingApp):
             y += layout.line_height + 4
 
         yield image, 0, 0
+
+    @override
+    def on_tap(self, x: int, y: int) -> bool:
+        # Informational only — no actions.
+        return False

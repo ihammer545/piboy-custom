@@ -4,10 +4,11 @@ from injector import inject
 from PIL import Image, ImageDraw
 
 from app.App import SelfUpdatingApp
-from app.ui_kit import fit_text
+from app.ui_kit import fit_text, make_hit
 from core.data import DeviceStatus
 from core.decorator import override
 from environment import AppConfig
+from interaction.touch.events import HitTarget, Rect, hit_test
 from services.terminal import SensorService
 
 
@@ -20,6 +21,8 @@ class SensorsApp(SelfUpdatingApp):
         super().__init__(lambda: draw_callback(True))
         self.__sensors = sensors
         self.__app_config = app_config
+        self.__selected_metric: str | None = None
+        self.__hits: list[HitTarget] = []
 
     @property
     @override
@@ -39,7 +42,8 @@ class SensorsApp(SelfUpdatingApp):
         width, _height = cfg.app_size
         font = cfg.font_standard
         header = cfg.font_header
-        accent = cfg.accent
+        accent, dark = cfg.accent, cfg.accent_dark
+        self.__hits = []
 
         draw.text((layout.pad, layout.pad), 'СРЕДА — датчики окружающей среды', fill=accent, font=header)
 
@@ -59,14 +63,21 @@ class SensorsApp(SelfUpdatingApp):
         if reading.data is None:
             draw.text((layout.pad, y), 'Нет данных', fill=accent, font=header)
         else:
-            lines = [
-                f'Температура: {reading.data.temperature:.1f} °C',
-                f'Влажность:   {reading.data.humidity:.0%}',
-                f'Давление:    {reading.data.pressure:.1f} hPa',
+            metrics = [
+                ('temp', f'Температура: {reading.data.temperature:.1f} °C'),
+                ('humidity', f'Влажность:   {reading.data.humidity:.0%}'),
+                ('pressure', f'Давление:    {reading.data.pressure:.1f} hPa'),
             ]
-            for line in lines:
-                draw.text((layout.pad, y), fit_text(font, line, width - 2 * layout.pad), fill=accent, font=header)
-                y += layout.line_height + layout.gap
+            row_h = max(layout.line_height + layout.gap, layout.button_min_height)
+            for key, line in metrics:
+                box = Rect(layout.pad, y, width - layout.pad, y + row_h - 1)
+                if self.__selected_metric == key:
+                    draw.rectangle(box.as_tuple(), fill=dark)
+                draw.text((layout.pad + 6, y + (row_h - layout.line_height) // 2),
+                          fit_text(header, line, width - 2 * layout.pad - 8), fill=accent, font=header)
+                self.__hits.append(make_hit(box, f'metric:{key}',
+                                            min_w=layout.button_min_width, min_h=layout.button_min_height))
+                y += row_h + 4
 
         if reading.warning:
             y += layout.gap
@@ -76,3 +87,11 @@ class SensorsApp(SelfUpdatingApp):
                       fill=accent, font=font)
 
         yield image, 0, 0
+
+    @override
+    def on_tap(self, x: int, y: int) -> bool:
+        target = hit_test(self.__hits, x, y)
+        if target is None or not target.action.startswith('metric:'):
+            return False
+        self.__selected_metric = target.action.split(':', 1)[1]
+        return True

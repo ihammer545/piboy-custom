@@ -7,12 +7,14 @@ from core.decorator import override
 from interaction.Display import Display
 from interaction.Input import Input
 from interaction.UnifiedInteraction import UnifiedInteraction
+from interaction.touch.simulator import SimulatorTouchInput
 
 
 class SelfManagedTkInteraction(UnifiedInteraction):
     """
     Dev UI: terminal canvas is exactly `resolution` (e.g. 800×480).
     Keypad and simulator controls are laid out beside the canvas — never over it.
+    Left-click on the canvas is a finger tap simulation (no hover/cursor UX).
     """
 
     BUTTON_W = 12
@@ -24,7 +26,11 @@ class SelfManagedTkInteraction(UnifiedInteraction):
                  on_rotary_increase: Callable[[Display], None], on_rotary_decrease: Callable[[Display], None],
                  on_rotary_switch: Callable[[Display], None],
                  resolution: tuple[int, int], background: tuple[int, int, int], ui_background: tuple[int, int, int],
-                 simulator_callback: Optional[Callable[[str], None]] = None):
+                 simulator_callback: Optional[Callable[[str], None]] = None,
+                 touch_input: Optional[SimulatorTouchInput] = None,
+                 on_digit: Optional[Callable[[str], None]] = None,
+                 on_backspace: Optional[Callable[[], None]] = None,
+                 on_clear: Optional[Callable[[], None]] = None):
         Input.__init__(self, on_key_left, on_key_right, on_key_up, on_key_down, on_key_a, on_key_b,
                        on_rotary_increase, on_rotary_decrease, on_rotary_switch)
         self.__on_key_left = lambda: on_key_left(self)
@@ -38,20 +44,27 @@ class SelfManagedTkInteraction(UnifiedInteraction):
         self.__resolution = resolution
         self.__background = background
         self.__simulator_callback = simulator_callback
+        self.__touch_input = touch_input
+        self.__on_digit = on_digit
+        self.__on_backspace = on_backspace
+        self.__on_clear = on_clear
         self.__image = Image.new('RGB', resolution, background)
 
         self.__root = tk.Tk()
         self.__root.title('Терминал убежища — симулятор')
         self.__root.configure(bg='#%02x%02x%02x' % ui_background)
+        # Hide system cursor over the terminal canvas (touch simulation, not mouse UI).
+        self.__root.config(cursor='none')
 
         w, h = resolution
         self.__image_tk = ImageTk.PhotoImage(self.__image)
         self.__canvas = tk.Canvas(self.__root, width=w, height=h, highlightthickness=0,
-                                  bg='#%02x%02x%02x' % background)
+                                  bg='#%02x%02x%02x' % background, cursor='none')
         self.__canvas.grid(row=0, column=0, rowspan=12, sticky='nw')
         self.__canvas_image = self.__canvas.create_image(0, 0, anchor=tk.NW, image=self.__image_tk)
+        self.__canvas.bind('<Button-1>', self.__on_canvas_tap)
 
-        size_label = tk.Label(self.__root, text=f'Экран {w}×{h}',
+        size_label = tk.Label(self.__root, text=f'Экран {w}×{h} · tap=ЛКМ',
                               bg='#%02x%02x%02x' % ui_background, fg='#1bfb1e')
         size_label.grid(row=0, column=1, columnspan=3, sticky='w', padx=8)
 
@@ -105,6 +118,30 @@ class SelfManagedTkInteraction(UnifiedInteraction):
         self.__root.bind('<Escape>', lambda _e: self.__on_key_b())
         self.__root.bind('<Prior>', lambda _e: self.__on_rotary_decrease())
         self.__root.bind('<Next>', lambda _e: self.__on_rotary_increase())
+        self.__root.bind('<BackSpace>', lambda _e: self.__backspace())
+        self.__root.bind('<Delete>', lambda _e: self.__clear())
+        for digit in '0123456789':
+            self.__root.bind(digit, lambda _e, d=digit: self.__digit(d))
+
+    def __digit(self, digit: str):
+        if self.__on_digit:
+            self.__on_digit(digit)
+
+    def __backspace(self):
+        if self.__on_backspace:
+            self.__on_backspace()
+
+    def __clear(self):
+        if self.__on_clear:
+            self.__on_clear()
+
+    def __on_canvas_tap(self, event):
+        if self.__touch_input is None:
+            return
+        # Canvas widget size may differ from logical resolution if scaled by WM.
+        cw = max(self.__canvas.winfo_width(), 1)
+        ch = max(self.__canvas.winfo_height(), 1)
+        self.__touch_input.inject_canvas_click(event.x, event.y, cw, ch)
 
     def __sim(self, action: str):
         if self.__simulator_callback:

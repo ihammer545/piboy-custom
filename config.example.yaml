@@ -28,3 +28,15 @@ simulator: !SimulatorConfig
   lock_pulse_ms: 1500
   event_log_limit: 80
   connect_delay_s: 0.8
+input: !InputConfig
+  mode: touch_keyboard
+  touch: !TouchDeviceConfig
+    device: /dev/input/event0
+    width: 800
+    height: 480
+    swap_axes: false
+    invert_x: false
+    invert_y: false
+    rotation: 0
+    debounce_ms: 120
+    enabled: true

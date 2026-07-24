@@ -93,6 +93,44 @@ class SimulatorConfig:
 
 
 @dataclass
+class TouchDeviceConfig:
+    """Linux evdev touchscreen calibration (screen space is app_config resolution)."""
+    device: str = '/dev/input/event0'
+    width: int = 800
+    height: int = 480
+    abs_x_min: int | None = None
+    abs_x_max: int | None = None
+    abs_y_min: int | None = None
+    abs_y_max: int | None = None
+    swap_axes: bool = False
+    invert_x: bool = False
+    invert_y: bool = False
+    rotation: int = 0
+    debounce_ms: int = 120
+    enabled: bool = True
+
+
+@dataclass
+class InputConfig:
+    """
+    mode:
+      - keyboard — only keys / GPIO keypad
+      - touch — touch only (still allows keyboard if present)
+      - touch_keyboard — touch + keyboard (default)
+    """
+    mode: str = 'touch_keyboard'
+    touch: TouchDeviceConfig = field(default_factory=TouchDeviceConfig)
+
+    @property
+    def touch_enabled(self) -> bool:
+        return self.mode in ('touch', 'touch_keyboard') and self.touch.enabled
+
+    @property
+    def keyboard_enabled(self) -> bool:
+        return self.mode in ('keyboard', 'touch_keyboard')
+
+
+@dataclass
 class AppConfig:
     app_side_offset: int = 24
     app_top_offset: int = 40
@@ -210,6 +248,7 @@ class Environment:
     display_config: DisplayConfig = field(default_factory=lambda: DisplayConfig())
     sensor_thresholds: SensorThresholdConfig = field(default_factory=SensorThresholdConfig)
     simulator: SimulatorConfig = field(default_factory=SimulatorConfig)
+    input: InputConfig = field(default_factory=InputConfig)
     # legacy field kept for YAML compatibility; prefer `backend`
     dev_mode: bool = True
 
@@ -220,6 +259,13 @@ class Environment:
             self.sensor_thresholds = SensorThresholdConfig(**self.sensor_thresholds)
         if isinstance(self.simulator, dict):
             self.simulator = SimulatorConfig(**self.simulator)
+        if isinstance(self.input, dict):
+            touch = self.input.get('touch')
+            if isinstance(touch, dict):
+                self.input = InputConfig(mode=self.input.get('mode', 'touch_keyboard'),
+                                         touch=TouchDeviceConfig(**touch))
+            else:
+                self.input = InputConfig(**self.input)
         if self.app_config is not None and isinstance(self.app_config, dict):
             self.app_config = AppConfig(**self.app_config)
 
@@ -320,6 +366,30 @@ def simulator_config_representor(dumper: Dumper, data: SimulatorConfig) -> Mappi
     return dumper.represent_mapping('!SimulatorConfig', _public_vars(data))
 
 
+def touch_device_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> TouchDeviceConfig:
+    if isinstance(node, MappingNode):
+        return TouchDeviceConfig(**loader.construct_mapping(node))
+    raise TypeError("node is not of type MappingNode")
+
+
+def touch_device_representor(dumper: Dumper, data: TouchDeviceConfig) -> MappingNode:
+    return dumper.represent_mapping('!TouchDeviceConfig', _public_vars(data))
+
+
+def input_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> InputConfig:
+    if isinstance(node, MappingNode):
+        values = loader.construct_mapping(node)
+        touch = values.get('touch')
+        if isinstance(touch, dict):
+            values['touch'] = TouchDeviceConfig(**touch)
+        return InputConfig(**values)
+    raise TypeError("node is not of type MappingNode")
+
+
+def input_config_representor(dumper: Dumper, data: InputConfig) -> MappingNode:
+    return dumper.represent_mapping('!InputConfig', _public_vars(data))
+
+
 def app_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> AppConfig:
     if isinstance(node, MappingNode):
         values = loader.construct_mapping(node)
@@ -379,6 +449,8 @@ def configure():
     yaml.add_constructor('!LayoutConfig', layout_config_constructor)
     yaml.add_constructor('!SensorThresholdConfig', sensor_threshold_constructor)
     yaml.add_constructor('!SimulatorConfig', simulator_config_constructor)
+    yaml.add_constructor('!TouchDeviceConfig', touch_device_constructor)
+    yaml.add_constructor('!InputConfig', input_config_constructor)
     yaml.add_constructor('!AppConfig', app_config_constructor)
     yaml.add_constructor('!KeypadConfig', keypad_config_constructor)
     yaml.add_constructor('!RotaryConfig', rotary_config_constructor)
@@ -391,6 +463,8 @@ def configure():
     yaml.add_representer(LayoutConfig, layout_config_representor)
     yaml.add_representer(SensorThresholdConfig, sensor_threshold_representor)
     yaml.add_representer(SimulatorConfig, simulator_config_representor)
+    yaml.add_representer(TouchDeviceConfig, touch_device_representor)
+    yaml.add_representer(InputConfig, input_config_representor)
     yaml.add_representer(AppConfig, app_config_representor)
     yaml.add_representer(KeypadConfig, keypad_config_representor)
     yaml.add_representer(RotaryConfig, rotary_config_representor)
