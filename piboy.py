@@ -59,6 +59,7 @@ class AppState:
         self.__crt = CRTRenderer(resolve_crt_settings(
             preset=crt_cfg.preset,
             enabled=crt_cfg.enabled,
+            phosphor_floor=crt_cfg.phosphor_floor,
             scanlines=crt_cfg.scanlines,
             vignette=crt_cfg.vignette,
             grain=crt_cfg.grain,
@@ -66,6 +67,8 @@ class AppState:
             flicker=crt_cfg.flicker,
             glow=crt_cfg.glow,
             rounded_corners=crt_cfg.rounded_corners,
+            bezel_inset=crt_cfg.bezel_inset,
+            curvature=crt_cfg.curvature,
             grain_fps=crt_cfg.grain_fps,
             grain_seed=crt_cfg.grain_seed,
             width=e.app_config.width,
@@ -177,15 +180,17 @@ class AppState:
         return cfg.app_side_offset, cfg.app_top_offset
 
     def on_touch_event(self, event: TouchEvent):
-        """Handle a normalized screen-space tap (full 800×480)."""
+        """Handle a display-space tap; inverse-CRT to logical 800×480 UI coords."""
         display = self.__display
         if display is None:
             return
+        # Display → logical UI (identity when CRT off / curvature=0)
+        ux, uy = self.__crt.display_to_ui(event.x, event.y)
         # Footer is non-interactive
-        if self.__footer_rect is not None and self.__footer_rect.contains(event.x, event.y):
+        if self.__footer_rect is not None and self.__footer_rect.contains(ux, uy):
             return
         # Header tabs
-        tab = hit_test(self.__tab_hits, event.x, event.y)
+        tab = hit_test(self.__tab_hits, ux, uy)
         if tab is not None and tab.action.startswith('tab:'):
             self.switch_to_app(int(tab.action.split(':', 1)[1]))
             self.update_display(display, partial=False)
@@ -194,8 +199,8 @@ class AppState:
         ox, oy = self.app_content_origin()
         cfg = self.__environment.app_config
         app_w, app_h = cfg.app_size
-        local_x = event.x - ox
-        local_y = event.y - oy
+        local_x = ux - ox
+        local_y = uy - oy
         if local_x < 0 or local_y < 0 or local_x >= app_w or local_y >= app_h:
             return
         if self.active_app.on_tap(local_x, local_y):

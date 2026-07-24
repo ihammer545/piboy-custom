@@ -2,131 +2,111 @@
 
 ## Overview
 
-`CRTRenderer` (`rendering/crt.py`) is a **post-processor** applied to the composed
-**800×480** UI frame after apps/chrome are drawn and **before** `Display.show`.
+`CRTRenderer` (`rendering/crt.py`) post-processes the composed **800×480** UI frame
+before `Display.show`. The simulator side panel is never processed.
 
 ```
 UI Apps + chrome → AppState.compose_frame() → CRTRenderer → Display
+display touch → CRTRenderer.display_to_ui → hit-test (logical 800×480)
 ```
 
-Effects are procedural (Pillow only). No Fallout assets or logos.
+All effects are procedural (Pillow). No Fallout assets.
 
-**Important:** there is **no barrel distortion / geometry warp**. Touch coordinates stay
-`0…799 × 0…479` and match hitboxes. Convex-glass look comes from vignette, corner mask,
-and glare only.
+## Why phosphor floor matters
+
+Pure `RGB(0,0,0)` made multiply/alpha overlays invisible. A tiny green-black
+**phosphor floor** lifts blacks (e.g. ~`(0,4–8,1–3)`) so scanlines, grain,
+vignette and glare read across the whole glass — not only on bright UI chrome.
 
 ## Warning
 
-Strong flicker can cause discomfort for some people. Default `subtle` uses a very low
-flicker (or effectively mild). Prefer `off` or `subtle` for long sessions; use `strong`
-only for demos.
+Strong flicker can cause discomfort. Prefer `subtle` for long sessions; use
+`strong` for demos. Default flicker stays very low.
+
+## Pipeline
+
+```
+UI frame
+→ phosphor black level
+→ optional glow
+→ barrel distortion (cached mesh)
+→ scanlines (multiply)
+→ signed grain
+→ vignette
+→ glass glare (screen)
+→ rounded glass mask / bezel + rim
+→ output 800×480
+```
 
 ## Configuration
-
-In `config.yaml` / `config.example.yaml`:
 
 ```yaml
 crt: !CrtConfig
   preset: subtle          # off | subtle | strong
-  # Optional overrides (omit / null = preset default):
-  # enabled: true
-  # scanlines: 0.10
-  # vignette: 0.20
-  # grain: 0.025
-  # glare: 0.08
-  # flicker: 0.006
+  # phosphor_floor: 0.018
+  # scanlines: 0.16
+  # vignette: 0.42
+  # grain: 0.045
+  # glare: 0.14
+  # flicker: 0.004
   # glow: 0.0
   # rounded_corners: 24
+  # bezel_inset: 8
+  # curvature: 0.009
   # grain_fps: 5
   grain_seed: 42
 ```
 
-| Preset | Intent |
-|--------|--------|
-| `off` | Pixel-identical copy of the UI frame |
-| `subtle` | Default — readable on 5″; **glow=0** |
-| `strong` | Demo look — heavier scanlines/vignette/grain; optional glow |
+| Preset | Character |
+|--------|-----------|
+| `off` | Pixel-identical UI |
+| `subtle` | Soft glass, light curvature, **glow=0** |
+| `strong` | Decorative CRT; text still readable |
 
-Numeric overrides are clamped to safe ranges.
+## Curvature & touch
 
-## Effects
+`curvature > 0` applies a mild barrel-style warp (edges pull inward). The same
+geometry module (`rendering/crt_geometry.py`) is used for:
 
-| Effect | Notes |
-|--------|--------|
-| Scanlines | Cached horizontal lines every 3 px |
-| Vignette | Cached elliptical darkening; corners darker |
-| Rounded mask | Cached; outside → black |
-| Glare | Cached soft top-left glass highlight |
-| Grain | Small tile scaled up; refreshed at `grain_fps` |
-| Flicker | Tiny brightness sine; capped |
-| Glow | Optional BoxBlur blend; **off in subtle** |
+- rendering (cached Pillow `MESH`);
+- touch: **display → UI** via `CRTRenderer.display_to_ui`.
 
-## Caching
+When `off` or `curvature: 0`, coordinates are unchanged.
 
-Cached once per (resolution + settings fingerprint):
+## Dev simulator
 
-- scanlines, vignette, glare, corner mask
-- grain tile / current grain frame (single buffer, replaced on fps tick)
+Panel buttons (no CRT on the panel itself): **CRT off / subtle / strong**.
 
-No history of processed frames. No per-effect threads.
+```bash
+.venv/bin/python piboy_dev.py
+```
 
-## Performance (Pi 3A+ / 512 MB)
+Preview PNGs: `docs/crt/{off,subtle,strong,calibration}.png`
 
-Recommended for device:
+```bash
+.venv/bin/python scripts/generate_crt_previews.py
+.venv/bin/python scripts/bench_crt.py
+```
+
+## Pi 3A+ recommendation
 
 ```yaml
 crt: !CrtConfig
   preset: subtle
   glow: 0
   grain_fps: 3
-  flicker: 0.004
+  curvature: 0.009   # or 0 if CPU-bound
 ```
 
-Or disable completely:
-
-```yaml
-crt: !CrtConfig
-  preset: off
-```
-
-When CRT is **enabled**, AppState uses a **full-frame** present path (partial patches
-cannot carry post-FX). When **off**, the previous partial-update path remains.
-
-## Dev simulator
-
-Right-hand panel buttons (do **not** receive CRT):
-
-- `CRT off`
-- `CRT subtle`
-- `CRT strong`
-
-Runtime switch applies to the current process only (not written to disk).
-
-```bash
-.venv/bin/python piboy_dev.py
-```
-
-## Disable
-
-- Config: `preset: off`
-- Dev: button **CRT off**
+Disable: `preset: off`.
 
 ## Manual check (UTM)
 
-Prefer **subtle** for first review; **strong** is demo-only.
-
-- [ ] All six tabs in `off` / `subtle` / `strong`
-- [ ] Russian text remains readable (especially ДОСТУП keypad)
-- [ ] Selected / disabled states distinguishable
-- [ ] Footer readable
-- [ ] Taps center and near edges / rounded corners
-- [ ] Runtime CRT switch without restart
-- [ ] Simulator side panel has no CRT / no flicker
-- [ ] No noticeable touch lag
-- [ ] Clean exit (no hung threads)
-
-## Benchmark
-
-```bash
-.venv/bin/python scripts/bench_crt.py
-```
+- [ ] Black areas show faint grain / scanlines / glare
+- [ ] Visible bezel + rounded glass
+- [ ] Vignette: corners darker than center
+- [ ] subtle vs strong clearly different
+- [ ] Tabs / footer not clipped badly
+- [ ] Edge and center taps land correctly with curvature
+- [ ] ДОСТУП keypad readable
+- [ ] Panel has no CRT flicker

@@ -135,6 +135,7 @@ class CrtConfig:
     """Procedural CRT look. See docs/CRT.md. Default preset is subtle (glow off)."""
     enabled: bool | None = None
     preset: str = 'subtle'
+    phosphor_floor: float | None = None
     scanlines: float | None = None
     vignette: float | None = None
     grain: float | None = None
@@ -142,6 +143,8 @@ class CrtConfig:
     flicker: float | None = None
     glow: float | None = None
     rounded_corners: int | None = None
+    bezel_inset: int | None = None
+    curvature: float | None = None
     grain_fps: float | None = None
     grain_seed: int = 42
 
