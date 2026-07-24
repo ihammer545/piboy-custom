@@ -26,6 +26,7 @@ from interaction.touch.source import NullTouchSource, TouchSource
 from ports.intercom import CallPhase
 from ports.lock import LockState
 from ports.status import LinkStatus
+from interaction.frame_presenter import RenderGate
 from rendering.crt import CRTRenderer, resolve_crt_settings
 from services.event_log import EventLogService
 from services.terminal import AccessService, DeviceService, IntercomService, SensorService, SystemService
@@ -74,10 +75,15 @@ class AppState:
             width=e.app_config.width,
             height=e.app_config.height,
         ))
+        self.__render_gate = RenderGate()
 
     @property
     def crt(self) -> CRTRenderer:
         return self.__crt
+
+    @property
+    def render_gate(self) -> RenderGate:
+        return self.__render_gate
 
     def set_crt_preset(self, preset: str) -> None:
         """Runtime CRT switch for the current process (not persisted)."""
@@ -93,6 +99,7 @@ class AppState:
 
     def stop_touch(self) -> None:
         self.__touch_source.stop()
+        self.__render_gate.shutdown()
 
     @property
     def touch_source(self) -> TouchSource:
@@ -220,19 +227,28 @@ class AppState:
         self.update_display(display, partial=True)
 
     def watch_function(self, display: Display):
+        """Background timer: only schedules work — never touches Tk directly."""
         while True:
             now = datetime.now()
             time.sleep(1.0 - now.microsecond / 1000000.0)
-            if self.__crt.enabled:
-                # CRT requires a full composed frame (footer + chrome + app).
-                self.update_display(display, partial=False)
+            call_soon = getattr(display, 'call_soon', None)
+            if callable(call_soon):
+                call_soon(lambda d=display: self.__watch_tick(d))
             else:
-                image, x0, y0 = draw_footer(self.image_buffer, self)
-                display.show(image, x0, y0)
-            self.__tick()
+                self.__watch_tick(display)
+
+    def __watch_tick(self, display: Display) -> None:
+        if self.__crt.enabled:
+            # Full compose + CRT; must not race with input renders.
+            self.update_display(display, partial=False)
+        else:
+            # Footer-only refresh still goes through Display.show (presenter).
+            image, x0, y0 = draw_footer(self.image_buffer, self)
+            display.show(image, x0, y0)
+        self.__tick()
 
     def compose_frame(self) -> Image.Image:
-        """Build a full logical UI frame (no CRT). Used by CRT path and tests."""
+        """Build a full logical UI frame (no CRT) into a fresh buffer."""
         image = self.clear_buffer()
         app_bbox = (self.__environment.app_config.app_side_offset,
                     self.__environment.app_config.app_top_offset,
@@ -243,32 +259,46 @@ class AppState:
             pass
         for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), False):
             image.paste(patch, (x0 + x_offset, y0 + y_offset))
-        return image
+        # Return a detached copy so CRT/present never share the live UI buffer.
+        return image.copy()
 
     def update_display(self, display: Display, partial=False):
-        if self.__crt.enabled:
-            # Compromise: when CRT is on, always compose and push a full 800×480 frame.
-            # Partial patch updates cannot carry post-processing consistently.
-            frame = self.compose_frame()
-            processed = self.__crt.process(frame, ui_changed=True)
-            display.show(processed, 0, 0)
-            return
+        """
+        Compose (and CRT-process) a complete frame, then hand it to Display.show.
+        Concurrent callers coalesce via RenderGate — no parallel CRT passes.
+        """
+        def _render():
+            if self.__crt.enabled:
+                # Always full-frame when CRT is on (partial patches cannot carry FX).
+                frame = self.compose_frame()
+                processed = self.__crt.process(frame, ui_changed=True)
+                display.show(processed, 0, 0)
+                return
 
-        image = self.clear_buffer()
-        app_bbox = (self.__environment.app_config.app_side_offset,
-                    self.__environment.app_config.app_top_offset,
-                    self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
-                    self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
-        x_offset, y_offset = app_bbox[0:2]
-        if partial:
-            for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                display.show(patch, x0 + x_offset, y0 + y_offset)
-        else:
-            for patch, x0, y0 in draw_base(image, self):
-                display.show(patch, x0, y0)
-            for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                image.paste(patch, (x0 + x_offset, y0 + y_offset))
-            display.show(image.crop(app_bbox), x_offset, y_offset)
+            image = self.clear_buffer()
+            app_bbox = (self.__environment.app_config.app_side_offset,
+                        self.__environment.app_config.app_top_offset,
+                        self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+                        self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
+            x_offset, y_offset = app_bbox[0:2]
+            if partial:
+                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                    display.show(patch, x0 + x_offset, y0 + y_offset)
+            else:
+                for patch, x0, y0 in draw_base(image, self):
+                    display.show(patch, x0, y0)
+                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                    image.paste(patch, (x0 + x_offset, y0 + y_offset))
+                display.show(image.crop(app_bbox), x_offset, y_offset)
+
+        # If a Tk display asks that work run on the main thread, honor it when
+        # we are not already there (e.g. watch timer thread).
+        call_soon = getattr(display, 'call_soon', None)
+        is_main = getattr(display, 'is_main_thread', None)
+        if callable(call_soon) and callable(is_main) and not is_main():
+            call_soon(lambda: self.__render_gate.request(_render))
+            return
+        self.__render_gate.request(_render)
 
     def on_key_left(self, display: Display):
         self.active_app.on_key_left()

@@ -12,7 +12,19 @@ display touch → CRTRenderer.display_to_ui → hit-test (logical 800×480)
 
 All effects are procedural (Pillow). No Fallout assets.
 
-## Why phosphor floor matters
+## Black-frame flash (fixed)
+
+Cause: `watch_function` ran on a **background thread** and called Tk
+`PhotoImage` / `canvas.itemconfigure` directly (Tk is not thread-safe), while
+UI input could compose/CRT in parallel and race `clear_buffer`.
+
+Fix: `FramePresenter` (queue size 1) + `RenderGate`; all canvas swaps via
+`root.after` on the Tk main thread; one permanent canvas image item; strong
+`PhotoImage` ref; never clear to black between frames.
+
+Temporary: preset `flicker: 0` so intentional brightness flicker is not confused
+with this bug.
+
 
 Pure `RGB(0,0,0)` made multiply/alpha overlays invisible. A tiny green-black
 **phosphor floor** lifts blacks (e.g. ~`(0,4–8,1–3)`) so scanlines, grain,

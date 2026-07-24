@@ -60,7 +60,8 @@ _PRESET_VALUES: dict[str, dict[str, Any]] = {
         'vignette': 0.42,
         'grain': 0.045,
         'glare': 0.14,
-        'flicker': 0.004,
+        # Temporarily 0 — diagnose black-frame flashes vs intentional CRT flicker.
+        'flicker': 0.0,
         'glow': 0.0,
         'rounded_corners': 24,
         'bezel_inset': 8,
@@ -74,7 +75,8 @@ _PRESET_VALUES: dict[str, dict[str, Any]] = {
         'vignette': 0.62,
         'grain': 0.08,
         'glare': 0.26,
-        'flicker': 0.010,
+        # Temporarily 0 — diagnose black-frame flashes vs intentional CRT flicker.
+        'flicker': 0.0,
         'glow': 0.06,
         'rounded_corners': 38,
         'bezel_inset': 10,
