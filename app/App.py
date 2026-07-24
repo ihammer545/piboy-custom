@@ -17,6 +17,11 @@ class App(ABC):
         """Title of the app shown in the header. Use ideally three or four capital letters."""
         raise NotImplementedError
 
+    @property
+    def emits_tap_sound(self) -> bool:
+        """If True, AppState plays a default touch click after a successful on_tap."""
+        return True
+
     @abstractmethod
     def draw(self, image: Image.Image, partial=False) -> Generator[tuple[Image.Image, int, int], Any, None]:
         """

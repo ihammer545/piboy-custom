@@ -150,6 +150,20 @@ class CrtConfig:
 
 
 @dataclass
+class UiSoundsConfig:
+    """Short UI feedback beeps. See docs/UI_SOUNDS.md."""
+    enabled: bool = True
+    volume: float = 0.35
+    clicks_during_call: bool = False
+    min_interval_ms: int = 30
+
+
+@dataclass
+class AudioConfig:
+    ui_sounds: UiSoundsConfig = field(default_factory=UiSoundsConfig)
+
+
+@dataclass
 class AppConfig:
     app_side_offset: int = 24
     app_top_offset: int = 40
@@ -269,6 +283,7 @@ class Environment:
     simulator: SimulatorConfig = field(default_factory=SimulatorConfig)
     input: InputConfig = field(default_factory=InputConfig)
     crt: CrtConfig = field(default_factory=CrtConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
     # legacy field kept for YAML compatibility; prefer `backend`
     dev_mode: bool = True
 
@@ -288,6 +303,12 @@ class Environment:
                 self.input = InputConfig(**self.input)
         if isinstance(self.crt, dict):
             self.crt = CrtConfig(**self.crt)
+        if isinstance(self.audio, dict):
+            ui = self.audio.get('ui_sounds', self.audio)
+            if isinstance(ui, dict):
+                self.audio = AudioConfig(ui_sounds=UiSoundsConfig(**ui))
+            else:
+                self.audio = AudioConfig(ui_sounds=ui if isinstance(ui, UiSoundsConfig) else UiSoundsConfig())
         if self.app_config is not None and isinstance(self.app_config, dict):
             self.app_config = AppConfig(**self.app_config)
 
@@ -422,6 +443,30 @@ def crt_config_representor(dumper: Dumper, data: CrtConfig) -> MappingNode:
     return dumper.represent_mapping('!CrtConfig', _public_vars(data))
 
 
+def ui_sounds_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> UiSoundsConfig:
+    if isinstance(node, MappingNode):
+        return UiSoundsConfig(**loader.construct_mapping(node))
+    raise TypeError("node is not of type MappingNode")
+
+
+def ui_sounds_config_representor(dumper: Dumper, data: UiSoundsConfig) -> MappingNode:
+    return dumper.represent_mapping('!UiSoundsConfig', _public_vars(data))
+
+
+def audio_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> AudioConfig:
+    if isinstance(node, MappingNode):
+        values = loader.construct_mapping(node)
+        ui = values.get('ui_sounds')
+        if isinstance(ui, dict):
+            values['ui_sounds'] = UiSoundsConfig(**ui)
+        return AudioConfig(**values)
+    raise TypeError("node is not of type MappingNode")
+
+
+def audio_config_representor(dumper: Dumper, data: AudioConfig) -> MappingNode:
+    return dumper.represent_mapping('!AudioConfig', _public_vars(data))
+
+
 def app_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> AppConfig:
     if isinstance(node, MappingNode):
         values = loader.construct_mapping(node)
@@ -484,6 +529,8 @@ def configure():
     yaml.add_constructor('!TouchDeviceConfig', touch_device_constructor)
     yaml.add_constructor('!InputConfig', input_config_constructor)
     yaml.add_constructor('!CrtConfig', crt_config_constructor)
+    yaml.add_constructor('!UiSoundsConfig', ui_sounds_config_constructor)
+    yaml.add_constructor('!AudioConfig', audio_config_constructor)
     yaml.add_constructor('!AppConfig', app_config_constructor)
     yaml.add_constructor('!KeypadConfig', keypad_config_constructor)
     yaml.add_constructor('!RotaryConfig', rotary_config_constructor)
@@ -499,6 +546,8 @@ def configure():
     yaml.add_representer(TouchDeviceConfig, touch_device_representor)
     yaml.add_representer(InputConfig, input_config_representor)
     yaml.add_representer(CrtConfig, crt_config_representor)
+    yaml.add_representer(UiSoundsConfig, ui_sounds_config_representor)
+    yaml.add_representer(AudioConfig, audio_config_representor)
     yaml.add_representer(AppConfig, app_config_representor)
     yaml.add_representer(KeypadConfig, keypad_config_representor)
     yaml.add_representer(RotaryConfig, rotary_config_representor)

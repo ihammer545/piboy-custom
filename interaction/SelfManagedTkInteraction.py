@@ -129,6 +129,10 @@ class SelfManagedTkInteraction(UnifiedInteraction):
             ('CRT off', 'crt_off'),
             ('CRT subtle', 'crt_subtle'),
             ('CRT strong', 'crt_strong'),
+            ('UI sound on/off', 'sound_toggle'),
+            ('Volume −', 'sound_vol_down'),
+            ('Volume +', 'sound_vol_up'),
+            ('Тест звука', 'sound_test'),
         ]
         for idx, (label, action) in enumerate(sim_actions):
             row = 7 + idx // 2

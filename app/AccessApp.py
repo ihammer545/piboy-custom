@@ -11,6 +11,7 @@ from environment import AppConfig
 from interaction.touch.events import HitTarget, Rect, hit_test
 from ports.lock import AccessOutcome, LockState
 from services.terminal import AccessService
+from services.ui_sound import UiSoundService
 
 
 class AccessUiState(Enum):
@@ -25,10 +26,11 @@ class AccessApp(SelfUpdatingApp):
 
     @inject
     def __init__(self, draw_callback: Callable[[bool], None], access: AccessService,
-                 app_config: AppConfig):
+                 app_config: AppConfig, sounds: UiSoundService):
         super().__init__(lambda: draw_callback(True))
         self.__access = access
         self.__app_config = app_config
+        self.__sounds = sounds
         self.__digits = ''
         self.__mask_char = '●'
         self.__ui_state = AccessUiState.IDLE
@@ -47,6 +49,11 @@ class AccessApp(SelfUpdatingApp):
 
     @property
     @override
+    def emits_tap_sound(self) -> bool:
+        return False
+
+    @property
+    @override
     def refresh_time(self) -> float:
         return 0.25
 
@@ -56,19 +63,27 @@ class AccessApp(SelfUpdatingApp):
         self.__message = 'Введите код'
         self.__scenario = ''
 
-    def __press(self, key: str):
+    def __press(self, key: str, *, from_touch: bool = False):
         if key in ('Сброс', 'clear'):
+            self.__sounds.back()
             self.__clear_code()
             return
         if key in ('⌫', 'backspace'):
+            self.__sounds.back()
             self.__digits = self.__digits[:-1]
             self.__ui_state = AccessUiState.IDLE
             self.__message = 'Введите код'
             return
         if key == 'OK':
+            self.__sounds.confirm()
             self.__submit()
             return
         if key.isdigit() and len(self.__digits) < 8:
+            # On-screen pad → touch; hardware / arrows+A digit entry → key.
+            if from_touch:
+                self.__sounds.touch()
+            else:
+                self.__sounds.key()
             self.__digits += key
             self.__ui_state = AccessUiState.IDLE
             self.__message = 'Введите код'
@@ -76,16 +91,20 @@ class AccessApp(SelfUpdatingApp):
     def __submit(self):
         self.__ui_state = AccessUiState.CHECKING
         self.__message = 'Проверка...'
-        result, _pulse = self.__access.submit_code(self.__digits)
+        # Code is never logged or voiced — only outcome sounds.
+        result, pulse = self.__access.submit_code(self.__digits)
         self.__digits = ''
         if result.outcome == AccessOutcome.DENIED:
             self.__ui_state = AccessUiState.DENIED
             self.__message = result.message
             self.__scenario = result.scenario
+            self.__sounds.denied()
         else:
             self.__ui_state = AccessUiState.GRANTED
             self.__message = result.message
             self.__scenario = result.scenario
+            if pulse is not None:
+                self.__sounds.lock()
 
     @override
     def draw(self, image: Image.Image, partial=False) -> Generator[tuple[Image.Image, int, int], Any, None]:
@@ -147,22 +166,23 @@ class AccessApp(SelfUpdatingApp):
         target = hit_test(self.__hits, x, y)
         if target is None:
             return False
+        # Disabled targets are filtered by hit_test — silent (no denied click).
         self.__pressed_key = target.action
         if target.action in self.__keys:
             self.__focus = self.__keys.index(target.action)
-        self.__press(target.action)
+        self.__press(target.action, from_touch=True)
         return True
 
     @override
     def on_digit(self, digit: str) -> bool:
         if digit.isdigit():
-            self.__press(digit)
+            self.__press(digit, from_touch=False)
             return True
         return False
 
     @override
     def on_backspace(self) -> bool:
-        self.__press('⌫')
+        self.__press('⌫', from_touch=False)
         return True
 
     @override
@@ -183,11 +203,11 @@ class AccessApp(SelfUpdatingApp):
 
     @override
     def on_key_a(self):
-        self.__press(self.__keys[self.__focus])
+        self.__press(self.__keys[self.__focus], from_touch=False)
 
     @override
     def on_key_b(self):
-        self.__press('Сброс')
+        self.__press('Сброс', from_touch=False)
 
     @override
     def on_app_leave(self):

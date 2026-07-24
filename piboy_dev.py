@@ -73,6 +73,18 @@ if __name__ == '__main__':
         elif action == 'crt_strong':
             app_state.set_crt_preset('strong')
             return
+        elif action == 'sound_toggle':
+            app_state.sounds.set_enabled(not app_state.sounds.enabled)
+            return
+        elif action == 'sound_vol_down':
+            app_state.sounds.adjust_volume(-0.05)
+            return
+        elif action == 'sound_vol_up':
+            app_state.sounds.adjust_volume(0.05)
+            return
+        elif action == 'sound_test':
+            app_state.sounds.confirm()
+            return
         app_state.update_display(__tk, partial=False)
 
     __tk = SelfManagedTkInteraction(

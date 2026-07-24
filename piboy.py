@@ -30,6 +30,7 @@ from interaction.frame_presenter import RenderGate
 from rendering.crt import CRTRenderer, resolve_crt_settings
 from services.event_log import EventLogService
 from services.terminal import AccessService, DeviceService, IntercomService, SensorService, SystemService
+from services.ui_sound import UiSoundService, UiSoundSettings, open_ui_sound_port
 
 fileConfig(fname='config.ini')
 logger = logging.getLogger(__name__)
@@ -43,12 +44,14 @@ class AppState:
                  intercom: IntercomService,
                  access: AccessService,
                  sensors: SensorService,
-                 system: SystemService):
+                 system: SystemService,
+                 sounds: UiSoundService):
         self.__environment = e
         self.__intercom = intercom
         self.__access = access
         self.__sensors = sensors
         self.__system = system
+        self.__sounds = sounds
         self.__image_buffer = self.__init_buffer()
         self.__apps: list[App] = []
         self.__active_app = 0
@@ -82,6 +85,10 @@ class AppState:
         return self.__crt
 
     @property
+    def sounds(self) -> UiSoundService:
+        return self.__sounds
+
+    @property
     def render_gate(self) -> RenderGate:
         return self.__render_gate
 
@@ -100,6 +107,7 @@ class AppState:
     def stop_touch(self) -> None:
         self.__touch_source.stop()
         self.__render_gate.shutdown()
+        self.__sounds.close()
 
     @property
     def touch_source(self) -> TouchSource:
@@ -181,6 +189,7 @@ class AppState:
         self.active_app.on_app_leave()
         self.__active_app = index
         self.active_app.on_app_enter()
+        self.__sounds.touch()
 
     def app_content_origin(self) -> tuple[int, int]:
         cfg = self.__environment.app_config
@@ -211,19 +220,27 @@ class AppState:
         if local_x < 0 or local_y < 0 or local_x >= app_w or local_y >= app_h:
             return
         if self.active_app.on_tap(local_x, local_y):
+            if self.active_app.emits_tap_sound:
+                self.__sounds.touch()
             self.update_display(display, partial=True)
 
     def on_digit_key(self, digit: str, display: Display):
         if self.active_app.on_digit(digit):
+            if self.active_app.emits_tap_sound:
+                self.__sounds.key()
             self.update_display(display, partial=True)
 
     def on_backspace_key(self, display: Display):
         if self.active_app.on_backspace():
+            if self.active_app.emits_tap_sound:
+                self.__sounds.back()
             self.update_display(display, partial=True)
 
     def on_clear_key(self, display: Display):
         # Delete / clear maps to B for AccessApp
         self.active_app.on_key_b()
+        if self.active_app.emits_tap_sound:
+            self.__sounds.back()
         self.update_display(display, partial=True)
 
     def watch_function(self, display: Display):
@@ -301,39 +318,49 @@ class AppState:
         self.__render_gate.request(_render)
 
     def on_key_left(self, display: Display):
+        self.__sounds.key()
         self.active_app.on_key_left()
         self.update_display(display, partial=True)
 
     def on_key_right(self, display: Display):
+        self.__sounds.key()
         self.active_app.on_key_right()
         self.update_display(display, partial=True)
 
     def on_key_up(self, display: Display):
+        self.__sounds.key()
         self.active_app.on_key_up()
         self.update_display(display, partial=True)
 
     def on_key_down(self, display: Display):
+        self.__sounds.key()
         self.active_app.on_key_down()
         self.update_display(display, partial=True)
 
     def on_key_a(self, display: Display):
         self.active_app.on_key_a()
+        if self.active_app.emits_tap_sound:
+            self.__sounds.confirm()
         self.update_display(display, partial=True)
 
     def on_key_b(self, display: Display):
         self.active_app.on_key_b()
+        if self.active_app.emits_tap_sound:
+            self.__sounds.back()
         self.update_display(display, partial=True)
 
     def on_rotary_increase(self, display: Display):
         self.active_app.on_app_leave()
         self.next_app()
         self.active_app.on_app_enter()
+        self.__sounds.touch()
         self.update_display(display, partial=False)
 
     def on_rotary_decrease(self, display: Display):
         self.active_app.on_app_leave()
         self.previous_app()
         self.active_app.on_app_enter()
+        self.__sounds.touch()
         self.update_display(display, partial=False)
 
 
@@ -431,9 +458,27 @@ class AppModule(Module):
 
     @singleton
     @provider
+    def provide_ui_sound_service(self, e: Environment, intercom: IntercomService) -> UiSoundService:
+        cfg = e.audio.ui_sounds
+        settings = UiSoundSettings(
+            enabled=cfg.enabled,
+            volume=cfg.volume,
+            clicks_during_call=cfg.clicks_during_call,
+            min_interval_ms=cfg.min_interval_ms,
+        )
+        port = open_ui_sound_port(prefer_pyaudio=True)
+        return UiSoundService(
+            port=port,
+            settings=settings,
+            call_phase_fn=lambda: intercom.session().phase,
+        )
+
+    @singleton
+    @provider
     def provide_app_state(self, e: Environment, intercom: IntercomService, access: AccessService,
-                          sensors: SensorService, system: SystemService) -> AppState:
-        return AppState(e, intercom, access, sensors, system)
+                          sensors: SensorService, system: SystemService,
+                          sounds: UiSoundService) -> AppState:
+        return AppState(e, intercom, access, sensors, system, sounds)
 
     @singleton
     @provider

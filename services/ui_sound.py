@@ -1,0 +1,302 @@
+"""UiSoundService — semantic UI feedback with preload, debounce, and bounded queue."""
+
+from __future__ import annotations
+
+import logging
+import os
+import struct
+import threading
+import time
+import wave
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Deque, Optional
+
+from ports.intercom import CallPhase
+from ports.ui_sound import UiSoundEvent, UiSoundPort
+
+logger = logging.getLogger('piboy.ui_sound')
+
+DEFAULT_SOUNDS_DIR = Path('resources') / 'sounds'
+
+# Click-like events subject to interval debounce and preferential drop.
+_CLICK_EVENTS = frozenset({UiSoundEvent.KEY, UiSoundEvent.TOUCH})
+_PRIORITY = {
+    UiSoundEvent.LOCK: 5,
+    UiSoundEvent.DENIED: 4,
+    UiSoundEvent.CONFIRM: 3,
+    UiSoundEvent.BACK: 2,
+    UiSoundEvent.KEY: 1,
+    UiSoundEvent.TOUCH: 1,
+}
+
+
+@dataclass(frozen=True)
+class _Sample:
+    pcm: bytes
+    rate: int
+    channels: int
+
+
+@dataclass
+class UiSoundSettings:
+    enabled: bool = True
+    volume: float = 0.35
+    clicks_during_call: bool = False
+    min_interval_ms: int = 30
+    queue_max: int = 4
+
+
+class UiSoundService:
+    """
+    Apps call semantic methods (key/touch/confirm/…).
+    WAV files are preloaded once; playback goes through UiSoundPort.
+    """
+
+    def __init__(
+        self,
+        port: UiSoundPort,
+        settings: UiSoundSettings | None = None,
+        sounds_dir: Path | str | None = None,
+        call_phase_fn: Optional[Callable[[], CallPhase]] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.__port = port
+        self.__settings = settings or UiSoundSettings()
+        self.__settings.volume = self._clamp_volume(self.__settings.volume)
+        self.__sounds_dir = Path(sounds_dir) if sounds_dir else DEFAULT_SOUNDS_DIR
+        self.__call_phase_fn = call_phase_fn
+        self.__clock = clock
+        self.__samples: dict[UiSoundEvent, list[_Sample]] = {}
+        self.__variant_idx = 0
+        self.__lock = threading.Lock()
+        self.__queue: Deque[UiSoundEvent] = deque()
+        self.__last_click_ts = 0.0
+        self.__preloaded = False
+        self.__closed = False
+        self.__worker: Optional[threading.Thread] = None
+        self.__wake = threading.Event()
+        self.preload()
+        self.__start_worker()
+
+    @staticmethod
+    def _clamp_volume(value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+    @property
+    def enabled(self) -> bool:
+        return self.__settings.enabled and not self.__closed
+
+    @property
+    def volume(self) -> float:
+        return self.__settings.volume
+
+    @property
+    def settings(self) -> UiSoundSettings:
+        return self.__settings
+
+    @property
+    def preloaded(self) -> bool:
+        return self.__preloaded
+
+    @property
+    def queue_len(self) -> int:
+        with self.__lock:
+            return len(self.__queue)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.__settings.enabled = bool(enabled)
+
+    def set_volume(self, volume: float) -> None:
+        self.__settings.volume = self._clamp_volume(volume)
+
+    def adjust_volume(self, delta: float) -> float:
+        self.set_volume(self.__settings.volume + delta)
+        return self.__settings.volume
+
+    def preload(self) -> None:
+        """Load all UI WAVs into memory once."""
+        if self.__preloaded:
+            return
+        mapping = {
+            UiSoundEvent.KEY: ['key_a.wav', 'key_b.wav', 'key_c.wav'],
+            UiSoundEvent.TOUCH: ['touch_a.wav', 'touch_b.wav', 'touch_c.wav'],
+            UiSoundEvent.CONFIRM: ['confirm.wav'],
+            UiSoundEvent.BACK: ['back.wav'],
+            UiSoundEvent.DENIED: ['denied.wav'],
+            UiSoundEvent.LOCK: ['lock.wav'],
+        }
+        for event, names in mapping.items():
+            loaded: list[_Sample] = []
+            for name in names:
+                path = self.__sounds_dir / name
+                if not path.is_file():
+                    logger.warning('UI sound missing: %s', path)
+                    continue
+                loaded.append(self._load_wav(path))
+            if not loaded:
+                # Tiny procedural fallback so tests work without files.
+                loaded.append(self._synth_click(event))
+            self.__samples[event] = loaded
+        self.__preloaded = True
+
+    def key(self) -> None:
+        self.play(UiSoundEvent.KEY)
+
+    def touch(self) -> None:
+        self.play(UiSoundEvent.TOUCH)
+
+    def confirm(self) -> None:
+        self.play(UiSoundEvent.CONFIRM)
+
+    def back(self) -> None:
+        self.play(UiSoundEvent.BACK)
+
+    def denied(self) -> None:
+        self.play(UiSoundEvent.DENIED)
+
+    def lock(self) -> None:
+        self.play(UiSoundEvent.LOCK)
+
+    def play(self, event: UiSoundEvent) -> None:
+        if self.__closed or not self.__settings.enabled:
+            return
+        if event in _CLICK_EVENTS and not self.__settings.clicks_during_call:
+            phase = self.__call_phase_fn() if self.__call_phase_fn else CallPhase.IDLE
+            if phase not in (CallPhase.IDLE, CallPhase.ENDED):
+                return
+        now = self.__clock()
+        with self.__lock:
+            if event in _CLICK_EVENTS:
+                min_gap = max(0.0, self.__settings.min_interval_ms / 1000.0)
+                if now - self.__last_click_ts < min_gap:
+                    return
+                self.__last_click_ts = now
+            self.__enqueue_locked(event)
+            self.__wake.set()
+
+    def __enqueue_locked(self, event: UiSoundEvent) -> None:
+        max_q = max(1, int(self.__settings.queue_max))
+        if len(self.__queue) >= max_q:
+            # Drop oldest low-priority click; keep important events.
+            dropped = False
+            for i, existing in enumerate(self.__queue):
+                if existing in _CLICK_EVENTS and _PRIORITY.get(existing, 0) <= _PRIORITY.get(event, 0):
+                    del self.__queue[i]
+                    dropped = True
+                    break
+            if not dropped and event in _CLICK_EVENTS:
+                return  # discard new click if queue is full of important sounds
+            if not dropped and len(self.__queue) >= max_q:
+                self.__queue.popleft()
+        self.__queue.append(event)
+
+    def __start_worker(self) -> None:
+        self.__worker = threading.Thread(target=self.__worker_loop, name='ui-sound-dispatch', daemon=True)
+        self.__worker.start()
+
+    def __worker_loop(self) -> None:
+        while not self.__closed:
+            self.__wake.wait(timeout=0.25)
+            self.__wake.clear()
+            while True:
+                with self.__lock:
+                    if not self.__queue:
+                        break
+                    event = self.__queue.popleft()
+                self.__emit(event)
+
+    def __emit(self, event: UiSoundEvent) -> None:
+        variants = self.__samples.get(event) or []
+        if not variants:
+            return
+        sample = variants[self.__variant_idx % len(variants)]
+        self.__variant_idx += 1
+        pcm = self._apply_volume(sample.pcm, self.__settings.volume)
+        try:
+            self.__port.play_pcm(pcm, sample.rate, sample.channels)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('UI sound playback error (%s)', exc)
+
+    def close(self) -> None:
+        self.__closed = True
+        self.__wake.set()
+        if self.__worker and self.__worker.is_alive() and threading.current_thread() is not self.__worker:
+            self.__worker.join(timeout=1.0)
+        self.__worker = None
+        with self.__lock:
+            self.__queue.clear()
+        try:
+            self.__port.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _load_wav(path: Path) -> _Sample:
+        with wave.open(str(path), 'rb') as wf:
+            channels = wf.getnchannels()
+            rate = wf.getframerate()
+            width = wf.getsampwidth()
+            frames = wf.readframes(wf.getnframes())
+        if width != 2:
+            raise ValueError(f'{path} must be 16-bit PCM')
+        if channels != 1:
+            # Downmix stereo → mono
+            samples = struct.unpack('<' + 'h' * (len(frames) // 2), frames)
+            mono = []
+            for i in range(0, len(samples), channels):
+                mono.append(int(sum(samples[i:i + channels]) / channels))
+            frames = struct.pack('<' + 'h' * len(mono), *mono)
+            channels = 1
+        return _Sample(pcm=frames, rate=rate, channels=channels)
+
+    @staticmethod
+    def _apply_volume(pcm: bytes, volume: float) -> bytes:
+        if volume >= 0.999:
+            return pcm
+        if volume <= 0.001:
+            return b'\x00' * len(pcm)
+        count = len(pcm) // 2
+        samples = struct.unpack('<' + 'h' * count, pcm)
+        scaled = [max(-32768, min(32767, int(s * volume))) for s in samples]
+        return struct.pack('<' + 'h' * count, *scaled)
+
+    @staticmethod
+    def _synth_click(event: UiSoundEvent) -> _Sample:
+        """Procedural mono 16-bit @ 22050 Hz fallback (~40 ms)."""
+        rate = 22050
+        duration = 0.04
+        n = int(rate * duration)
+        freq = {
+            UiSoundEvent.KEY: 1800,
+            UiSoundEvent.TOUCH: 1400,
+            UiSoundEvent.CONFIRM: 900,
+            UiSoundEvent.BACK: 700,
+            UiSoundEvent.DENIED: 220,
+            UiSoundEvent.LOCK: 480,
+        }.get(event, 1200)
+        samples = []
+        for i in range(n):
+            t = i / rate
+            # Decaying square-ish click
+            amp = (1.0 - t / duration) ** 2
+            val = 1.0 if int(t * freq * 2) % 2 == 0 else -1.0
+            samples.append(int(amp * val * 12000))
+        return _Sample(pcm=struct.pack('<' + 'h' * n, *samples), rate=rate, channels=1)
+
+
+def open_ui_sound_port(prefer_pyaudio: bool = True) -> UiSoundPort:
+    """Create PyAudio backend when possible; otherwise Null (one warning)."""
+    from backend.ui_sound_null import NullUiSoundBackend
+    if not prefer_pyaudio:
+        return NullUiSoundBackend()
+    try:
+        from backend.ui_sound_pyaudio import PyAudioUiSoundBackend
+        backend = PyAudioUiSoundBackend(sample_rate=22050, channels=1)
+        if backend.available:
+            return backend
+        backend.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('UI sound backend init failed (%s); using Null', exc)
+    return NullUiSoundBackend()

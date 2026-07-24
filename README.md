@@ -57,6 +57,7 @@ touch input (`feature/touch-input`).
 - Dev: `.venv/bin/python piboy_dev.py` — canvas tap = finger; right panel = simulator only
 - Touch / keyboard configuration: see [docs/TOUCH.md](docs/TOUCH.md)
 - Optional CRT look (scanlines/vignette, no geometry warp): see [docs/CRT.md](docs/CRT.md)
+- UI click sounds: see [docs/UI_SOUNDS.md](docs/UI_SOUNDS.md)
 
 ## Hardware
 
