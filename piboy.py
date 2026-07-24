@@ -26,6 +26,7 @@ from interaction.touch.source import NullTouchSource, TouchSource
 from ports.intercom import CallPhase
 from ports.lock import LockState
 from ports.status import LinkStatus
+from rendering.crt import CRTRenderer, resolve_crt_settings
 from services.event_log import EventLogService
 from services.terminal import AccessService, DeviceService, IntercomService, SensorService, SystemService
 
@@ -54,6 +55,32 @@ class AppState:
         self.__footer_rect: Rect | None = None
         self.__display: Display | None = None
         self.__touch_source: TouchSource = NullTouchSource()
+        crt_cfg = e.crt
+        self.__crt = CRTRenderer(resolve_crt_settings(
+            preset=crt_cfg.preset,
+            enabled=crt_cfg.enabled,
+            scanlines=crt_cfg.scanlines,
+            vignette=crt_cfg.vignette,
+            grain=crt_cfg.grain,
+            glare=crt_cfg.glare,
+            flicker=crt_cfg.flicker,
+            glow=crt_cfg.glow,
+            rounded_corners=crt_cfg.rounded_corners,
+            grain_fps=crt_cfg.grain_fps,
+            grain_seed=crt_cfg.grain_seed,
+            width=e.app_config.width,
+            height=e.app_config.height,
+        ))
+
+    @property
+    def crt(self) -> CRTRenderer:
+        return self.__crt
+
+    def set_crt_preset(self, preset: str) -> None:
+        """Runtime CRT switch for the current process (not persisted)."""
+        self.__crt.apply_preset(preset)
+        if self.__display is not None:
+            self.update_display(self.__display, partial=False)
 
     def bind_display(self, display: Display) -> None:
         self.__display = display
@@ -191,11 +218,37 @@ class AppState:
         while True:
             now = datetime.now()
             time.sleep(1.0 - now.microsecond / 1000000.0)
-            image, x0, y0 = draw_footer(self.image_buffer, self)
-            display.show(image, x0, y0)
+            if self.__crt.enabled:
+                # CRT requires a full composed frame (footer + chrome + app).
+                self.update_display(display, partial=False)
+            else:
+                image, x0, y0 = draw_footer(self.image_buffer, self)
+                display.show(image, x0, y0)
             self.__tick()
 
+    def compose_frame(self) -> Image.Image:
+        """Build a full logical UI frame (no CRT). Used by CRT path and tests."""
+        image = self.clear_buffer()
+        app_bbox = (self.__environment.app_config.app_side_offset,
+                    self.__environment.app_config.app_top_offset,
+                    self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+                    self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
+        x_offset, y_offset = app_bbox[0:2]
+        for _patch, _x0, _y0 in draw_base(image, self):
+            pass
+        for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), False):
+            image.paste(patch, (x0 + x_offset, y0 + y_offset))
+        return image
+
     def update_display(self, display: Display, partial=False):
+        if self.__crt.enabled:
+            # Compromise: when CRT is on, always compose and push a full 800×480 frame.
+            # Partial patch updates cannot carry post-processing consistently.
+            frame = self.compose_frame()
+            processed = self.__crt.process(frame, ui_changed=True)
+            display.show(processed, 0, 0)
+            return
+
         image = self.clear_buffer()
         app_bbox = (self.__environment.app_config.app_side_offset,
                     self.__environment.app_config.app_top_offset,

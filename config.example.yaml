@@ -40,3 +40,16 @@ input: !InputConfig
     rotation: 0
     debounce_ms: 120
     enabled: true
+crt: !CrtConfig
+  preset: subtle
+  # Optional overrides (null = use preset defaults):
+  # enabled: true
+  # scanlines: 0.10
+  # vignette: 0.20
+  # grain: 0.025
+  # glare: 0.08
+  # flicker: 0.006
+  # glow: 0.0
+  # rounded_corners: 24
+  # grain_fps: 5
+  grain_seed: 42

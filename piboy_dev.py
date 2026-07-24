@@ -64,6 +64,15 @@ if __name__ == '__main__':
             devices.set_online('vent', False)
         elif action == 'vent_online':
             devices.set_online('vent', True)
+        elif action == 'crt_off':
+            app_state.set_crt_preset('off')
+            return
+        elif action == 'crt_subtle':
+            app_state.set_crt_preset('subtle')
+            return
+        elif action == 'crt_strong':
+            app_state.set_crt_preset('strong')
+            return
         app_state.update_display(__tk, partial=False)
 
     __tk = SelfManagedTkInteraction(

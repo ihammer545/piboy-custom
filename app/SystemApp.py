@@ -54,6 +54,7 @@ class SystemApp(SelfUpdatingApp):
             f'Интерфейс: активен',
             f'Ввод: {inp.mode}',
             f'Тач: {"вкл" if inp.touch_enabled else "выкл"} ({inp.touch.device})',
+            f'CRT preset (config): {self.__environment.crt.preset}',
             f'Сеть (симулятор): {status.network.value}',
             f'Аудио (симулятор): {status.audio.value}',
             f'Время работы: {hours:02d}:{minutes:02d}:{seconds:02d}',

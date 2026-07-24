@@ -56,6 +56,7 @@ touch input (`feature/touch-input`).
 - Display target: **800×480**, landscape
 - Dev: `.venv/bin/python piboy_dev.py` — canvas tap = finger; right panel = simulator only
 - Touch / keyboard configuration: see [docs/TOUCH.md](docs/TOUCH.md)
+- Optional CRT look (scanlines/vignette, no geometry warp): see [docs/CRT.md](docs/CRT.md)
 
 ## Hardware
 

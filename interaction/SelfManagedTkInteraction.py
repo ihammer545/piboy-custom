@@ -102,6 +102,9 @@ class SelfManagedTkInteraction(UnifiedInteraction):
             ('След. команда FAIL', 'device_fail'),
             ('Вент. offline', 'vent_offline'),
             ('Вент. online', 'vent_online'),
+            ('CRT off', 'crt_off'),
+            ('CRT subtle', 'crt_subtle'),
+            ('CRT strong', 'crt_strong'),
         ]
         for idx, (label, action) in enumerate(sim_actions):
             row = 7 + idx // 2

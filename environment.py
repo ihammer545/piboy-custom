@@ -131,6 +131,22 @@ class InputConfig:
 
 
 @dataclass
+class CrtConfig:
+    """Procedural CRT look. See docs/CRT.md. Default preset is subtle (glow off)."""
+    enabled: bool | None = None
+    preset: str = 'subtle'
+    scanlines: float | None = None
+    vignette: float | None = None
+    grain: float | None = None
+    glare: float | None = None
+    flicker: float | None = None
+    glow: float | None = None
+    rounded_corners: int | None = None
+    grain_fps: float | None = None
+    grain_seed: int = 42
+
+
+@dataclass
 class AppConfig:
     app_side_offset: int = 24
     app_top_offset: int = 40
@@ -249,6 +265,7 @@ class Environment:
     sensor_thresholds: SensorThresholdConfig = field(default_factory=SensorThresholdConfig)
     simulator: SimulatorConfig = field(default_factory=SimulatorConfig)
     input: InputConfig = field(default_factory=InputConfig)
+    crt: CrtConfig = field(default_factory=CrtConfig)
     # legacy field kept for YAML compatibility; prefer `backend`
     dev_mode: bool = True
 
@@ -266,6 +283,8 @@ class Environment:
                                          touch=TouchDeviceConfig(**touch))
             else:
                 self.input = InputConfig(**self.input)
+        if isinstance(self.crt, dict):
+            self.crt = CrtConfig(**self.crt)
         if self.app_config is not None and isinstance(self.app_config, dict):
             self.app_config = AppConfig(**self.app_config)
 
@@ -390,6 +409,16 @@ def input_config_representor(dumper: Dumper, data: InputConfig) -> MappingNode:
     return dumper.represent_mapping('!InputConfig', _public_vars(data))
 
 
+def crt_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> CrtConfig:
+    if isinstance(node, MappingNode):
+        return CrtConfig(**loader.construct_mapping(node))
+    raise TypeError("node is not of type MappingNode")
+
+
+def crt_config_representor(dumper: Dumper, data: CrtConfig) -> MappingNode:
+    return dumper.represent_mapping('!CrtConfig', _public_vars(data))
+
+
 def app_config_constructor(loader: Loader | FullLoader | UnsafeLoader, node: Node) -> AppConfig:
     if isinstance(node, MappingNode):
         values = loader.construct_mapping(node)
@@ -451,6 +480,7 @@ def configure():
     yaml.add_constructor('!SimulatorConfig', simulator_config_constructor)
     yaml.add_constructor('!TouchDeviceConfig', touch_device_constructor)
     yaml.add_constructor('!InputConfig', input_config_constructor)
+    yaml.add_constructor('!CrtConfig', crt_config_constructor)
     yaml.add_constructor('!AppConfig', app_config_constructor)
     yaml.add_constructor('!KeypadConfig', keypad_config_constructor)
     yaml.add_constructor('!RotaryConfig', rotary_config_constructor)
@@ -465,6 +495,7 @@ def configure():
     yaml.add_representer(SimulatorConfig, simulator_config_representor)
     yaml.add_representer(TouchDeviceConfig, touch_device_representor)
     yaml.add_representer(InputConfig, input_config_representor)
+    yaml.add_representer(CrtConfig, crt_config_representor)
     yaml.add_representer(AppConfig, app_config_representor)
     yaml.add_representer(KeypadConfig, keypad_config_representor)
     yaml.add_representer(RotaryConfig, rotary_config_representor)
