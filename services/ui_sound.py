@@ -15,6 +15,7 @@ from typing import Callable, Deque, Optional
 
 from ports.intercom import CallPhase
 from ports.ui_sound import UiSoundEvent, UiSoundPort
+from backend.ui_sound_pcm import prepare_pcm_for_device
 
 logger = logging.getLogger('piboy.ui_sound')
 
@@ -46,6 +47,8 @@ class UiSoundSettings:
     clicks_during_call: bool = False
     min_interval_ms: int = 30
     queue_max: int = 4
+    output_device_index: int | None = None
+    output_device_name: str | None = None
 
 
 class UiSoundService:
@@ -116,7 +119,7 @@ class UiSoundService:
         return self.__settings.volume
 
     def preload(self) -> None:
-        """Load all UI WAVs into memory once."""
+        """Load all UI WAVs into memory once; convert to port output format once."""
         if self.__preloaded:
             return
         mapping = {
@@ -127,6 +130,8 @@ class UiSoundService:
             UiSoundEvent.DENIED: ['denied.wav'],
             UiSoundEvent.LOCK: ['lock.wav'],
         }
+        dst_rate = int(getattr(self.__port, 'output_rate', 22050) or 22050)
+        dst_ch = int(getattr(self.__port, 'output_channels', 1) or 1)
         for event, names in mapping.items():
             loaded: list[_Sample] = []
             for name in names:
@@ -134,12 +139,41 @@ class UiSoundService:
                 if not path.is_file():
                     logger.warning('UI sound missing: %s', path)
                     continue
-                loaded.append(self._load_wav(path))
+                raw = self._load_wav(path)
+                pcm = prepare_pcm_for_device(
+                    raw.pcm,
+                    src_rate=raw.rate,
+                    src_channels=raw.channels,
+                    dst_rate=dst_rate,
+                    dst_channels=dst_ch,
+                )
+                loaded.append(_Sample(pcm=pcm, rate=dst_rate, channels=dst_ch))
             if not loaded:
-                # Tiny procedural fallback so tests work without files.
-                loaded.append(self._synth_click(event))
+                raw = self._synth_click(event)
+                pcm = prepare_pcm_for_device(
+                    raw.pcm,
+                    src_rate=raw.rate,
+                    src_channels=raw.channels,
+                    dst_rate=dst_rate,
+                    dst_channels=dst_ch,
+                )
+                loaded.append(_Sample(pcm=pcm, rate=dst_rate, channels=dst_ch))
             self.__samples[event] = loaded
         self.__preloaded = True
+
+    def describe_output(self) -> str:
+        fn = getattr(self.__port, 'describe_output', None)
+        if callable(fn):
+            return str(fn())
+        return 'unknown'
+
+    def test_confirm(self) -> str:
+        """Log selected device and play confirm (dev panel)."""
+        info = self.describe_output()
+        logger.info('UI sound test → device %s volume=%.2f enabled=%s',
+                    info, self.__settings.volume, self.__settings.enabled)
+        self.confirm()
+        return info
 
     def key(self) -> None:
         self.play(UiSoundEvent.KEY)
@@ -286,14 +320,24 @@ class UiSoundService:
         return _Sample(pcm=struct.pack('<' + 'h' * n, *samples), rate=rate, channels=1)
 
 
-def open_ui_sound_port(prefer_pyaudio: bool = True) -> UiSoundPort:
+def open_ui_sound_port(
+    prefer_pyaudio: bool = True,
+    *,
+    device_index: int | None = None,
+    device_name: str | None = None,
+) -> UiSoundPort:
     """Create PyAudio backend when possible; otherwise Null (one warning)."""
     from backend.ui_sound_null import NullUiSoundBackend
     if not prefer_pyaudio:
         return NullUiSoundBackend()
     try:
         from backend.ui_sound_pyaudio import PyAudioUiSoundBackend
-        backend = PyAudioUiSoundBackend(sample_rate=22050, channels=1)
+        backend = PyAudioUiSoundBackend(
+            device_index=device_index,
+            device_name=device_name,
+            source_rate=22050,
+            source_channels=1,
+        )
         if backend.available:
             return backend
         backend.close()

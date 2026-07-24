@@ -62,3 +62,5 @@ audio: !AudioConfig
     volume: 0.35
     clicks_during_call: false
     min_interval_ms: 30
+    # output_device_index: 0
+    # output_device_name: "plughw"

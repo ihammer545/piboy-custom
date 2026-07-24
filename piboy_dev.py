@@ -83,7 +83,8 @@ if __name__ == '__main__':
             app_state.sounds.adjust_volume(0.05)
             return
         elif action == 'sound_test':
-            app_state.sounds.confirm()
+            info = app_state.sounds.test_confirm()
+            print(f'[ui-sound] test device: {info}')
             return
         app_state.update_display(__tk, partial=False)
 

@@ -465,8 +465,14 @@ class AppModule(Module):
             volume=cfg.volume,
             clicks_during_call=cfg.clicks_during_call,
             min_interval_ms=cfg.min_interval_ms,
+            output_device_index=cfg.output_device_index,
+            output_device_name=cfg.output_device_name,
         )
-        port = open_ui_sound_port(prefer_pyaudio=True)
+        port = open_ui_sound_port(
+            prefer_pyaudio=True,
+            device_index=cfg.output_device_index,
+            device_name=cfg.output_device_name,
+        )
         return UiSoundService(
             port=port,
             settings=settings,

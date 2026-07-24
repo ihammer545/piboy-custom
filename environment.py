@@ -156,6 +156,8 @@ class UiSoundsConfig:
     volume: float = 0.35
     clicks_during_call: bool = False
     min_interval_ms: int = 30
+    output_device_index: int | None = None
+    output_device_name: str | None = None
 
 
 @dataclass
