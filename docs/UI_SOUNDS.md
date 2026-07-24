@@ -9,26 +9,60 @@ UI action → UiSoundService → UiSoundPort → Null | PyAudio (ALSA on Pi)
 Apps never call PyAudio. Semantic events: `key`, `touch`, `confirm`, `back`, `denied`, `lock`.
 Disabled hits stay **silent**.
 
+## Important: which config files are used
+
+| File | Role |
+|------|------|
+| `config.ini` | **Logging only** (`fileConfig`). Never put audio settings here. |
+| `config.yaml` | Runtime app config (gitignored). Created with defaults if missing. |
+| `config.example.yaml` | **Documentation / template only — not loaded at runtime.** |
+| `config.local.yaml` | Local overrides (gitignored). Preferred for `output_device_index`. |
+
+Load order:
+
+1. `config.yaml` (or built-in defaults)
+2. `config.local.yaml` if present
+3. `PIBOY_UI_SOUND_DEVICE_INDEX` / `PIBOY_UI_SOUND_DEVICE_NAME` (highest priority for device)
+
+At startup the log shows:
+
+- loaded config path(s);
+- `UI sound device source=config|env|auto`;
+- selected `index` / `name`.
+
+## UTM: force ALSA device index 0
+
+```bash
+.venv/bin/python scripts/list_audio_devices.py
+# find the line for HDA Intel … (hw:0,0) — usually index 0
+
+cp config.local.example.yaml config.local.yaml
+# ensure: output_device_index: 0
+
+.venv/bin/python piboy_dev.py
+```
+
+Or without a file:
+
+```bash
+PIBOY_UI_SOUND_DEVICE_INDEX=0 .venv/bin/python piboy_dev.py
+```
+
+Panel → **Тест звука** (logs device + plays confirm).
+
 ## Device selection
 
-JACK is **not** required. PortAudio may probe JACK during init; that chatter is
-locally suppressed only around enumeration. Playback uses an explicit
-`output_device_index` when possible.
+JACK is not required. Order when resolving the PortAudio device:
 
-Order:
-
-1. `output_device_index` (if valid output)
-2. `output_device_name` (case-insensitive substring, prefer ALSA)
+1. Configured index (from local YAML or env)
+2. Configured name substring
 3. PortAudio default output
-4. First device with `maxOutputChannels > 0` (ALSA preferred over JACK)
+4. First real output (ALSA preferred over JACK)
 
-Stream format: usually **stereo** + device default rate (often 44100/48000).
-Assets are mono 22050; converted **once at preload** (no per-click resample).
+Stream: typically stereo @ 44100/48000; mono 22050 assets converted once at preload.
+Blocking `write` in one worker; `stop_stream` between clicks.
 
-Playback: one long-lived blocking stream, one worker, `stream.write(..., exception_on_underflow=False)`,
-then `stop_stream` between clicks (no silence filler → no underrun spam).
-
-## Config
+## Full YAML example
 
 ```yaml
 audio: !AudioConfig
@@ -37,26 +71,13 @@ audio: !AudioConfig
     volume: 0.35
     clicks_during_call: false
     min_interval_ms: 30
-    output_device_index: null   # or 0
-    output_device_name: null    # e.g. "bcm2835" / "plughw"
+    output_device_index: 0
+    output_device_name: null
 ```
-
-## List devices (UTM)
-
-```bash
-.venv/bin/python scripts/list_audio_devices.py
-```
-
-Then set `output_device_index` to a device with `out > 0` that matches
-`aplay -l` / working `plughw:0,0`.
-
-## Dev panel
-
-**Тест звука** logs the selected device and plays `confirm`.
 
 ## Assets
 
-`resources/sounds/*.wav` — mono 16-bit PCM @ 22050 Hz, ~18 KB total.
+`resources/sounds/*.wav` — mono 16-bit PCM @ 22050 Hz.
 
 ```bash
 .venv/bin/python scripts/generate_ui_sounds.py

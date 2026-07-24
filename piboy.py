@@ -391,12 +391,9 @@ class AppModule(Module):
     @singleton
     @provider
     def provide_environment(self) -> Environment:
-        environment.configure()
-        try:
-            env = environment.load()
-        except FileNotFoundError:
-            env = Environment()
-            environment.save(env)
+        # Loads config.yaml (+ optional config.local.yaml + PIBOY_UI_SOUND_*).
+        # Note: config.ini is logging-only and is never used here.
+        env = environment.load_runtime_environment()
         if self.__force_simulator:
             force_simulator(env)
         # Ensure resolution defaults for shelter terminal if missing from old configs
@@ -472,6 +469,7 @@ class AppModule(Module):
             prefer_pyaudio=True,
             device_index=cfg.output_device_index,
             device_name=cfg.output_device_name,
+            selection_source=environment.RUNTIME.ui_sound_device_source,
         )
         return UiSoundService(
             port=port,

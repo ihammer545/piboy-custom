@@ -95,11 +95,14 @@ class PyAudioUiSoundBackend:
         device_name: str | None = None,
         source_rate: int = _SOURCE_RATE,
         source_channels: int = _SOURCE_CHANNELS,
+        selection_source: str = 'auto',
     ):
         self.__source_rate = source_rate
         self.__source_channels = source_channels
         self.__configured_index = device_index
         self.__configured_name = device_name
+        self.__selection_source = selection_source  # config | env | auto (from app)
+        self.__pick_reason = 'auto'
         self.__queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=_PLAY_QUEUE_MAX)
         self.__closed = False
         self.__available = False
@@ -130,6 +133,14 @@ class PyAudioUiSoundBackend:
     def selected_device(self) -> Optional[AudioDeviceInfo]:
         return self.__device
 
+    @property
+    def selection_source(self) -> str:
+        return self.__selection_source
+
+    @property
+    def pick_reason(self) -> str:
+        return self.__pick_reason
+
     def describe_output(self) -> str:
         d = self.__device
         if d is None:
@@ -137,7 +148,8 @@ class PyAudioUiSoundBackend:
         return (
             f'index={d.index} name={d.name!r} host={d.host_api!r} '
             f'out_ch={self.__output_channels} rate={self.__output_rate} '
-            f'device_max_out={d.max_output_channels}'
+            f'device_max_out={d.max_output_channels} '
+            f'source={self.__selection_source} pick={self.__pick_reason}'
         )
 
     def __open(self) -> None:
@@ -146,12 +158,13 @@ class PyAudioUiSoundBackend:
             with _suppress_alsa_enumeration_noise():
                 self.__pa = pyaudio.PyAudio()
                 devices, default_out = enumerate_devices(self.__pa)
-            device = select_output_device(
+            device, pick_reason = select_output_device(
                 devices,
                 configured_index=self.__configured_index,
                 configured_name=self.__configured_name,
                 default_output_index=default_out,
             )
+            self.__pick_reason = pick_reason
             if device is None:
                 raise RuntimeError('no output audio device found')
             self.__device = device
@@ -159,7 +172,12 @@ class PyAudioUiSoundBackend:
             self.__output_rate = choose_stream_rate(device, source_rate=self.__source_rate)
             self.__stream = self.__open_stream(pyaudio)
             self.__available = True
-            logger.info('UI sound device selected: %s', self.describe_output())
+            logger.info(
+                'UI sound device selected: %s (requested_index=%s requested_name=%s)',
+                self.describe_output(),
+                self.__configured_index,
+                self.__configured_name,
+            )
             self.__worker = threading.Thread(target=self.__run, name='ui-sound-worker', daemon=True)
             self.__worker.start()
         except Exception as exc:  # noqa: BLE001

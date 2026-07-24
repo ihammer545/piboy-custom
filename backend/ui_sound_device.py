@@ -41,21 +41,24 @@ def select_output_device(
     configured_index: int | None = None,
     configured_name: str | None = None,
     default_output_index: int | None = None,
-) -> Optional[AudioDeviceInfo]:
+) -> tuple[Optional[AudioDeviceInfo], str]:
     """
     Pick an output device without opening streams.
 
-    Order: configured index → name substring → default output → first real output.
+    Returns (device, reason) where reason is:
+      - ``configured_index`` / ``configured_name`` when user config/env applied
+      - ``default`` / ``first_output`` for auto selection
+
     Input-only devices are skipped. JACK-only hosts are deprioritized.
     """
     outputs = [d for d in devices if is_output_device(d)]
     if not outputs:
-        return None
+        return None, 'none'
 
     if configured_index is not None:
         for d in outputs:
             if d.index == int(configured_index):
-                return d
+                return d, 'configured_index'
         # Invalid configured index — fall through to name / default / first.
 
     if configured_name:
@@ -63,20 +66,20 @@ def select_output_device(
         matches = [d for d in outputs if needle in d.name.lower()]
         if matches:
             matches.sort(key=lambda d: (_prefer_host(d.host_api), d.index))
-            return matches[0]
+            return matches[0], 'configured_name'
 
     if default_output_index is not None:
         for d in outputs:
             if d.index == int(default_output_index):
-                return d
+                return d, 'default'
 
     marked = [d for d in outputs if d.is_default_output]
     if marked:
         marked.sort(key=lambda d: (_prefer_host(d.host_api), d.index))
-        return marked[0]
+        return marked[0], 'default'
 
     outputs_sorted = sorted(outputs, key=lambda d: (_prefer_host(d.host_api), d.index))
-    return outputs_sorted[0]
+    return outputs_sorted[0], 'first_output'
 
 
 def choose_stream_channels(device: AudioDeviceInfo, prefer: int = 1) -> int:

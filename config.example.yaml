@@ -62,5 +62,7 @@ audio: !AudioConfig
     volume: 0.35
     clicks_during_call: false
     min_interval_ms: 30
-    # output_device_index: 0
-    # output_device_name: "plughw"
+  # output_device_index: 0
+  # output_device_name: "plughw"
+  # Prefer config.local.yaml or PIBOY_UI_SOUND_DEVICE_INDEX for machine-local devices.
+  # config.example.yaml is NOT loaded at runtime — see docs/UI_SOUNDS.md.

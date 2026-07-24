@@ -325,6 +325,7 @@ def open_ui_sound_port(
     *,
     device_index: int | None = None,
     device_name: str | None = None,
+    selection_source: str = 'auto',
 ) -> UiSoundPort:
     """Create PyAudio backend when possible; otherwise Null (one warning)."""
     from backend.ui_sound_null import NullUiSoundBackend
@@ -337,6 +338,7 @@ def open_ui_sound_port(
             device_name=device_name,
             source_rate=22050,
             source_channels=1,
+            selection_source=selection_source,
         )
         if backend.available:
             return backend

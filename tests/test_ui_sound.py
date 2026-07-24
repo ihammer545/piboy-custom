@@ -57,23 +57,26 @@ def _wait(port, n, timeout=1.0):
 
 def test_select_configured_index():
     devices = [_dev(0, 'mic', out=0, inp=2), _dev(1, 'speakers', out=2), _dev(2, 'hdmi', out=2)]
-    assert select_output_device(devices, configured_index=2).index == 2
+    d, reason = select_output_device(devices, configured_index=2)
+    assert d is not None and d.index == 2 and reason == 'configured_index'
 
 
 def test_select_by_name_case_insensitive():
     devices = [_dev(0, 'Built-in Mic', out=0, inp=1), _dev(3, 'USB Speakers', out=2)]
-    d = select_output_device(devices, configured_name='usb speak')
-    assert d is not None and d.index == 3
+    d, reason = select_output_device(devices, configured_name='usb speak')
+    assert d is not None and d.index == 3 and reason == 'configured_name'
 
 
 def test_select_default_output():
     devices = [_dev(0, 'a', out=2), _dev(1, 'b', out=2, default=True)]
-    assert select_output_device(devices, default_output_index=1).index == 1
+    d, reason = select_output_device(devices, default_output_index=1)
+    assert d is not None and d.index == 1 and reason == 'default'
 
 
 def test_select_first_output_skips_input_only():
     devices = [_dev(0, 'mic', out=0, inp=2), _dev(1, 'spk', out=2, host='ALSA')]
-    assert select_output_device(devices).index == 1
+    d, reason = select_output_device(devices)
+    assert d is not None and d.index == 1 and reason == 'first_output'
 
 
 def test_jack_deprioritized_vs_alsa():
@@ -81,12 +84,31 @@ def test_jack_deprioritized_vs_alsa():
         _dev(0, 'jack out', out=2, host='JACK Audio Connection Kit'),
         _dev(1, 'bcm2835', out=2, host='ALSA'),
     ]
-    assert select_output_device(devices).index == 1
+    d, _ = select_output_device(devices)
+    assert d is not None and d.index == 1
 
 
 def test_invalid_index_falls_through_to_default():
     devices = [_dev(0, 'a', out=2), _dev(1, 'b', out=2, default=True)]
-    assert select_output_device(devices, configured_index=99, default_output_index=1).index == 1
+    d, reason = select_output_device(devices, configured_index=99, default_output_index=1)
+    assert d is not None and d.index == 1 and reason == 'default'
+
+
+def test_explicit_index_zero_beats_default_fourteen():
+    """UTM case: PortAudio default may be 14; config/env index=0 must win."""
+    devices = [
+        _dev(0, 'HDA Intel: Generic Analog (hw:0,0)', out=2, host='ALSA'),
+        _dev(14, 'default', out=2, host='ALSA', default=True),
+    ]
+    d, reason = select_output_device(
+        devices,
+        configured_index=0,
+        default_output_index=14,
+    )
+    assert d is not None
+    assert d.index == 0
+    assert reason == 'configured_index'
+    assert 'HDA Intel' in d.name
 
 
 def test_mono_to_stereo_duplicates_samples():

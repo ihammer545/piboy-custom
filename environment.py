@@ -1,10 +1,14 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+import logging
+import os
 
 import yaml
 from PIL import ImageFont
 from yaml import Dumper, FullLoader, Loader, MappingNode, Node, UnsafeLoader
+
+_log = logging.getLogger('piboy.config')
 
 
 class BackendMode(str, Enum):
@@ -572,3 +576,142 @@ def force_simulator(environment: Environment) -> Environment:
     environment.backend = BackendMode.SIMULATOR.value
     environment.dev_mode = True
     return environment
+
+
+@dataclass
+class RuntimeConfigInfo:
+    """Non-persisted info about how Environment / UI sound device were resolved."""
+    paths: list[str] = field(default_factory=list)
+    ui_sound_device_source: str = 'auto'  # config | env | auto
+
+
+# Process-wide last load metadata (not written to YAML).
+RUNTIME = RuntimeConfigInfo()
+
+
+def _merge_ui_sounds(dst: UiSoundsConfig, src: UiSoundsConfig) -> None:
+    """Overlay non-default-ish fields from src onto dst (explicit local overrides)."""
+    dst.enabled = src.enabled
+    dst.volume = src.volume
+    dst.clicks_during_call = src.clicks_during_call
+    dst.min_interval_ms = src.min_interval_ms
+    if src.output_device_index is not None:
+        dst.output_device_index = src.output_device_index
+    if src.output_device_name:
+        dst.output_device_name = src.output_device_name
+
+
+def _apply_local_yaml(env: Environment, local_path: str) -> None:
+    """Apply config.local.yaml — full Environment, AudioConfig, or shorthand keys."""
+    with open(local_path, 'r') as file:
+        data = yaml.load(file, FullLoader)
+    if data is None:
+        return
+    if isinstance(data, Environment):
+        _merge_ui_sounds(env.audio.ui_sounds, data.audio.ui_sounds)
+        return
+    if isinstance(data, AudioConfig):
+        _merge_ui_sounds(env.audio.ui_sounds, data.ui_sounds)
+        return
+    if isinstance(data, UiSoundsConfig):
+        _merge_ui_sounds(env.audio.ui_sounds, data)
+        return
+    if isinstance(data, dict):
+        # Shorthand: output_device_index / output_device_name at top level
+        if 'output_device_index' in data and data['output_device_index'] is not None:
+            env.audio.ui_sounds.output_device_index = int(data['output_device_index'])
+        if data.get('output_device_name'):
+            env.audio.ui_sounds.output_device_name = str(data['output_device_name'])
+        audio = data.get('audio')
+        if isinstance(audio, AudioConfig):
+            _merge_ui_sounds(env.audio.ui_sounds, audio.ui_sounds)
+        elif isinstance(audio, dict):
+            ui = audio.get('ui_sounds', audio)
+            if isinstance(ui, UiSoundsConfig):
+                _merge_ui_sounds(env.audio.ui_sounds, ui)
+            elif isinstance(ui, dict):
+                if 'enabled' in ui:
+                    env.audio.ui_sounds.enabled = bool(ui['enabled'])
+                if 'volume' in ui:
+                    env.audio.ui_sounds.volume = float(ui['volume'])
+                if 'clicks_during_call' in ui:
+                    env.audio.ui_sounds.clicks_during_call = bool(ui['clicks_during_call'])
+                if 'min_interval_ms' in ui:
+                    env.audio.ui_sounds.min_interval_ms = int(ui['min_interval_ms'])
+                if ui.get('output_device_index') is not None:
+                    env.audio.ui_sounds.output_device_index = int(ui['output_device_index'])
+                if ui.get('output_device_name'):
+                    env.audio.ui_sounds.output_device_name = str(ui['output_device_name'])
+
+
+def apply_ui_sound_env_overrides(env: Environment) -> str | None:
+    """
+    Apply PIBOY_UI_SOUND_DEVICE_INDEX / PIBOY_UI_SOUND_DEVICE_NAME.
+    Returns 'env' if either override was applied, else None.
+    """
+    applied = False
+    raw_idx = os.environ.get('PIBOY_UI_SOUND_DEVICE_INDEX')
+    if raw_idx is not None and str(raw_idx).strip() != '':
+        env.audio.ui_sounds.output_device_index = int(raw_idx)
+        applied = True
+    raw_name = os.environ.get('PIBOY_UI_SOUND_DEVICE_NAME')
+    if raw_name is not None and str(raw_name).strip() != '':
+        env.audio.ui_sounds.output_device_name = str(raw_name).strip()
+        applied = True
+    return 'env' if applied else None
+
+
+def resolve_ui_sound_device_source(env: Environment, env_override: str | None) -> str:
+    if env_override == 'env':
+        return 'env'
+    ui = env.audio.ui_sounds
+    if ui.output_device_index is not None or (ui.output_device_name and str(ui.output_device_name).strip()):
+        return 'config'
+    return 'auto'
+
+
+def load_runtime_environment(
+    config_path: str = 'config.yaml',
+    local_path: str = 'config.local.yaml',
+    *,
+    create_if_missing: bool = True,
+) -> Environment:
+    """
+    Load application YAML config (not logging config.ini).
+
+    Order:
+      1. config.yaml if present, else defaults (+ optional save)
+      2. config.local.yaml overlay if present (gitignored)
+      3. PIBOY_UI_SOUND_DEVICE_* environment variables (highest priority for device)
+    """
+    configure()
+    RUNTIME.paths = []
+    if os.path.isfile(config_path):
+        env = load(config_path)
+        RUNTIME.paths.append(os.path.abspath(config_path))
+    else:
+        env = Environment()
+        if create_if_missing:
+            save(env, config_path)
+            RUNTIME.paths.append(os.path.abspath(config_path) + ' (created)')
+        else:
+            RUNTIME.paths.append('(defaults)')
+
+    if os.path.isfile(local_path):
+        _apply_local_yaml(env, local_path)
+        RUNTIME.paths.append(os.path.abspath(local_path))
+
+    env_override = apply_ui_sound_env_overrides(env)
+    RUNTIME.ui_sound_device_source = resolve_ui_sound_device_source(env, env_override)
+
+    _log.info(
+        'Loaded config paths: %s',
+        ', '.join(RUNTIME.paths) if RUNTIME.paths else '(none)',
+    )
+    _log.info(
+        'UI sound device source=%s index=%s name=%s',
+        RUNTIME.ui_sound_device_source,
+        env.audio.ui_sounds.output_device_index,
+        env.audio.ui_sounds.output_device_name,
+    )
+    return env
