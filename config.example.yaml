@@ -1,0 +1,30 @@
+!Environment
+backend: simulator
+dev_mode: true
+app_config: !AppConfig
+  width: 800
+  height: 480
+  app_side_offset: 24
+  app_top_offset: 40
+  app_bottom_offset: 36
+  font_name: FreeSansBold.ttf
+  font_header_size: 18
+  font_standard_size: 16
+  color_mode: 0
+  layout: !LayoutConfig
+    gap: 12
+    pad: 10
+    line_height: 28
+    button_min_height: 44
+    button_min_width: 100
+    list_row_height: 40
+    footer_height: 28
+sensor_thresholds: !SensorThresholdConfig
+  temperature_min: 10.0
+  temperature_max: 35.0
+  humidity_min: 0.2
+  humidity_max: 0.8
+simulator: !SimulatorConfig
+  lock_pulse_ms: 1500
+  event_log_limit: 80
+  connect_delay_s: 0.8

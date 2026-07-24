@@ -2,55 +2,80 @@ import threading
 
 from injector import Injector
 
-from app.ClockApp import ClockApp
-from app.DebugApp import DebugApp
-from app.EnvironmentApp import EnvironmentApp
-from app.FileManagerApp import FileManagerApp
-from app.MapApp import MapApp
-from app.RadioApp import RadioApp
-from app.UpdateApp import UpdateApp
+from backend.simulator import SimulatorBackend
 from environment import Environment
 from interaction.SelfManagedTkInteraction import SelfManagedTkInteraction
-from piboy import AppModule, AppState
+from piboy import AppModule, AppState, register_shelter_apps
+from services.terminal import DeviceService, IntercomService, SensorService
 
 """
-This pi-boy script uses the SelfManagedTkInteraction, which follows the usual mainloop approach. This makes it
-compatible with MacOS and maybe other desktop environments that require UI draw calls from a main thread only. Other
-systems may continue to use the other script, that is also made for the raspberry pi.
+Shelter terminal — development entrypoint.
+
+Always uses simulator backend. Main terminal surface is exactly app_config.resolution
+(default 800×480). Virtual keypad and simulator controls sit beside the screen.
 """
 if __name__ == '__main__':
     module = AppModule()
+    module.set_force_simulator(True)
     injector = Injector([module])
 
     env = injector.get(Environment)
     app_state = injector.get(AppState)
+    backend = injector.get(SimulatorBackend)
+    intercom = injector.get(IntercomService)
+    sensors = injector.get(SensorService)
+    devices = injector.get(DeviceService)
 
-    __tk = SelfManagedTkInteraction(app_state.on_key_left, app_state.on_key_right,
-                                    app_state.on_key_up, app_state.on_key_down,
-                                    app_state.on_key_a, app_state.on_key_b,
-                                    app_state.on_rotary_increase, app_state.on_rotary_decrease, lambda _: None,
-                                    env.app_config.resolution, env.app_config.background, env.app_config.accent_dark)
+    def on_sim_action(action: str):
+        if action == 'incoming_bunker':
+            intercom.simulate_incoming('bunker')
+        elif action == 'incoming_floor1':
+            intercom.simulate_incoming('floor1')
+        elif action == 'toggle_floor2':
+            peers = {p.peer_id: p for p in intercom.peers()}
+            peer = peers.get('floor2')
+            if peer:
+                online = peer.presence.value == 'online'
+                intercom.set_peer_online('floor2', not online)
+        elif action == 'sensor_offline':
+            sensors.set_online(False)
+        elif action == 'sensor_online':
+            sensors.set_online(True)
+        elif action == 'sensor_hot':
+            sensors.set_online(True)
+            sensors.nudge(temperature=42.0)
+        elif action == 'sensor_ok':
+            sensors.set_online(True)
+            sensors.nudge(temperature=21.5, humidity=0.48)
+        elif action == 'device_fail':
+            devices.set_next_fails(True)
+        elif action == 'vent_offline':
+            devices.set_online('vent', False)
+        elif action == 'vent_online':
+            devices.set_online('vent', True)
+        app_state.update_display(__tk, partial=False)
+
+    __tk = SelfManagedTkInteraction(
+        app_state.on_key_left, app_state.on_key_right,
+        app_state.on_key_up, app_state.on_key_down,
+        app_state.on_key_a, app_state.on_key_b,
+        app_state.on_rotary_increase, app_state.on_rotary_decrease, lambda _: None,
+        env.app_config.resolution, env.app_config.background, env.app_config.accent_dark,
+        simulator_callback=on_sim_action,
+    )
 
     module.register_external_tk_interaction(__tk)
-    app_state.add_app(injector.get(FileManagerApp)) \
-        .add_app(injector.get(UpdateApp)) \
-        .add_app(injector.get(EnvironmentApp)) \
-        .add_app(injector.get(RadioApp)) \
-        .add_app(injector.get(DebugApp)) \
-        .add_app(injector.get(ClockApp)) \
-        .add_app(injector.get(MapApp))
+    register_shelter_apps(injector, app_state)
 
-    # initial draw
     app_state.update_display(__tk)
     app_state.active_app.on_app_enter()
 
-    # watch function has to run in the background, because Tkinter mainloop must be in the main thread
-    threading.Thread(target=app_state.watch_function, args=(__tk, ), daemon=True).start()
+    threading.Thread(target=app_state.watch_function, args=(__tk,), daemon=True).start()
 
     try:
-        # blocking run function
         __tk.run()
     except KeyboardInterrupt:
         pass
     finally:
+        backend.ensure_safe()
         __tk.close()
