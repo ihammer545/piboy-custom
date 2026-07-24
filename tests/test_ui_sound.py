@@ -246,3 +246,73 @@ def test_one_reopen_flag_exists():
     b = PyAudioUiSoundBackend.__new__(PyAudioUiSoundBackend)
     b._PyAudioUiSoundBackend__reopen_used = False  # noqa: SLF001
     assert b._PyAudioUiSoundBackend__reopen_used is False  # noqa: SLF001
+
+
+def test_stream_lifecycle_no_stop_between_writes():
+    """Regression: start → write → pause → write again; never stop_stream between clicks."""
+    events: list[str] = []
+
+    class FakeStream:
+        def __init__(self):
+            self._active = True
+
+        def is_active(self):
+            return self._active
+
+        def start_stream(self):
+            events.append('start')
+            self._active = True
+
+        def stop_stream(self):
+            events.append('stop')
+            self._active = False
+
+        def write(self, pcm, num_frames=None, exception_on_underflow=True):
+            events.append(f'write:{len(pcm)}')
+
+        def close(self):
+            events.append('close')
+
+    b = PyAudioUiSoundBackend.__new__(PyAudioUiSoundBackend)
+    b._PyAudioUiSoundBackend__closed = False  # noqa: SLF001
+    b._PyAudioUiSoundBackend__available = True  # noqa: SLF001
+    b._PyAudioUiSoundBackend__stream = FakeStream()  # noqa: SLF001
+    b._PyAudioUiSoundBackend__lock = __import__('threading').Lock()  # noqa: SLF001
+    b._PyAudioUiSoundBackend__reopen_used = False  # noqa: SLF001
+    b._PyAudioUiSoundBackend__output_rate = 44100  # noqa: SLF001
+    b._PyAudioUiSoundBackend__output_channels = 2  # noqa: SLF001
+    b._PyAudioUiSoundBackend__writes = 0  # noqa: SLF001
+    b._PyAudioUiSoundBackend__warn_once = False  # noqa: SLF001
+
+    pcm = b'\x00\x00' * 100  # tiny stereo-ish buffer
+    assert b._PyAudioUiSoundBackend__write_blocking(pcm) is True  # noqa: SLF001
+    # Simulate idle gap (no stop)
+    time.sleep(0.01)
+    # Stream goes inactive (as after underrun) — must restart, not die
+    b._PyAudioUiSoundBackend__stream._active = False  # noqa: SLF001
+    assert b._PyAudioUiSoundBackend__write_blocking(pcm) is True  # noqa: SLF001
+
+    assert events.count('stop') == 0
+    assert any(e.startswith('write:') for e in events)
+    assert 'start' in events  # second write after inactive
+    assert b.write_count == 2
+
+
+def test_test_confirm_calls_play(monkeypatch):
+    from services.ui_sound import UiSoundService, UiSoundSettings, UiSoundEvent
+    port = RecordingPort()
+    svc = UiSoundService(port, UiSoundSettings(enabled=False, min_interval_ms=0),
+                         sounds_dir=Path('resources/sounds'))
+    played = []
+    orig = svc.play
+
+    def wrap(ev):
+        played.append(ev)
+        return orig(ev)
+
+    monkeypatch.setattr(svc, 'play', wrap)
+    info = svc.test_confirm()
+    assert 'recording' in info or info
+    assert played == [UiSoundEvent.CONFIRM]
+    _wait(port, 1)
+    svc.close()

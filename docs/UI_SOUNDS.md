@@ -48,7 +48,28 @@ Or without a file:
 PIBOY_UI_SOUND_DEVICE_INDEX=0 .venv/bin/python piboy_dev.py
 ```
 
-Panel → **Тест звука** (logs device + plays confirm).
+Panel → **Тест звука** calls `UiSoundService.play(CONFIRM)` (not log-only).
+
+## Diagnose silent playback (UTM)
+
+```bash
+# Same backend as the app — should be audible on plughw:0,0 equivalent:
+.venv/bin/python scripts/test_ui_sound_device.py --device 0
+
+# Compare with ALSA:
+aplay -D plughw:0,0 resources/sounds/confirm.wav
+```
+
+Enable DEBUG for worker/write tracing:
+
+```bash
+# in config.ini raise piboy.ui_sound to DEBUG, or:
+PIBOY_UI_SOUND_DEVICE_INDEX=0 .venv/bin/python -c "
+import logging; logging.basicConfig(level=logging.DEBUG)
+from backend.ui_sound_pyaudio import PyAudioUiSoundBackend
+...
+"
+```
 
 ## Device selection
 

@@ -1,7 +1,8 @@
 """PyAudio / PortAudio UI sound backend (ALSA-friendly, no JACK required).
 
-Uses a single long-lived blocking output stream and one worker thread.
-Does not feed silence between clicks (avoids underrun spam).
+Long-lived blocking output stream + one worker. Stream stays open between
+clicks; ``stop_stream`` is only used on shutdown / reopen (never right after
+a short write — that clipped ALSA playback).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from typing import Optional
 
@@ -101,7 +103,7 @@ class PyAudioUiSoundBackend:
         self.__source_channels = source_channels
         self.__configured_index = device_index
         self.__configured_name = device_name
-        self.__selection_source = selection_source  # config | env | auto (from app)
+        self.__selection_source = selection_source
         self.__pick_reason = 'auto'
         self.__queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=_PLAY_QUEUE_MAX)
         self.__closed = False
@@ -115,6 +117,7 @@ class PyAudioUiSoundBackend:
         self.__output_rate = source_rate
         self.__output_channels = 1
         self.__lock = threading.Lock()
+        self.__writes = 0
         self.__open()
 
     @property
@@ -140,6 +143,10 @@ class PyAudioUiSoundBackend:
     @property
     def pick_reason(self) -> str:
         return self.__pick_reason
+
+    @property
+    def write_count(self) -> int:
+        return self.__writes
 
     def describe_output(self) -> str:
         d = self.__device
@@ -189,22 +196,28 @@ class PyAudioUiSoundBackend:
 
     def __open_stream(self, pyaudio_mod):
         assert self.__pa is not None and self.__device is not None
-        return self.__pa.open(
+        # start=True: stream ready for blocking writes; keep it running between clicks.
+        stream = self.__pa.open(
             format=pyaudio_mod.paInt16,
             channels=self.__output_channels,
             rate=self.__output_rate,
             output=True,
             output_device_index=self.__device.index,
             frames_per_buffer=1024,
-            start=False,
+            start=True,
         )
+        logger.debug(
+            'UI sound stream opened active=%s ch=%s rate=%s device=%s',
+            stream.is_active(), self.__output_channels, self.__output_rate, self.__device.index,
+        )
+        return stream
 
     def play_pcm(self, pcm: bytes, sample_rate: int, channels: int = 1) -> None:
         """Enqueue PCM already matching output_rate / output_channels."""
         if not self.available or not pcm:
+            logger.debug('UI sound play_pcm skipped available=%s bytes=%s', self.available, len(pcm) if pcm else 0)
             return
         if sample_rate != self.__output_rate or channels != self.__output_channels:
-            # Last-resort convert (preload should already match).
             pcm = prepare_pcm_for_device(
                 pcm,
                 src_rate=sample_rate,
@@ -214,6 +227,7 @@ class PyAudioUiSoundBackend:
             )
         try:
             self.__queue.put_nowait(pcm)
+            logger.debug('UI sound queued bytes=%s qsize≈%s', len(pcm), self.__queue.qsize())
         except queue.Full:
             try:
                 self.__queue.get_nowait()
@@ -222,9 +236,10 @@ class PyAudioUiSoundBackend:
             try:
                 self.__queue.put_nowait(pcm)
             except queue.Full:
-                pass
+                logger.debug('UI sound queue full; drop')
 
     def __run(self) -> None:
+        logger.debug('UI sound worker started')
         while not self.__closed:
             try:
                 item = self.__queue.get(timeout=0.25)
@@ -234,23 +249,57 @@ class PyAudioUiSoundBackend:
                 break
             ok = self.__write_blocking(item)
             if not ok:
+                logger.debug('UI sound worker stopping after failed write')
                 break
+        logger.debug('UI sound worker exit closed=%s', self.__closed)
+
+    def __ensure_active(self, stream) -> None:
+        """Start stream if PortAudio stopped it after idle underrun."""
+        try:
+            active = stream.is_active()
+        except Exception:  # noqa: BLE001
+            active = False
+        if not active:
+            logger.debug('UI sound stream inactive → start_stream()')
+            stream.start_stream()
 
     def __write_blocking(self, pcm: bytes) -> bool:
         with self.__lock:
             stream = self.__stream
             if stream is None or self.__closed:
                 return False
+            frame_bytes = 2 * max(1, self.__output_channels)
+            n_frames = len(pcm) // frame_bytes
+            duration_ms = (n_frames / float(self.__output_rate)) * 1000.0 if self.__output_rate else 0.0
+            t0 = time.perf_counter()
             try:
-                if not stream.is_active():
-                    stream.start_stream()
-                # frames = bytes for paInt16 interleaved
+                self.__ensure_active(stream)
+                logger.debug(
+                    'UI sound write begin bytes=%s frames=%s ch=%s rate=%s dur_ms=%.1f active=%s',
+                    len(pcm), n_frames, self.__output_channels, self.__output_rate,
+                    duration_ms, stream.is_active(),
+                )
+                # Keyword-only underflow flag — do NOT pass False as num_frames.
                 stream.write(pcm, exception_on_underflow=False)
-                # Stop when idle so PortAudio does not underrun between clicks.
-                if stream.is_active():
-                    stream.stop_stream()
+                self.__writes += 1
+                logger.debug(
+                    'UI sound write end elapsed_ms=%.1f writes=%s active=%s',
+                    (time.perf_counter() - t0) * 1000.0, self.__writes, stream.is_active(),
+                )
+                # Do NOT stop_stream here — that clipped short WAVs before ALSA drained.
                 return True
             except Exception as exc:  # noqa: BLE001
+                # Idle underrun between clicks must not kill the backend.
+                msg = str(exc).lower()
+                if 'underflow' in msg or 'underrun' in msg:
+                    logger.debug('UI sound underflow ignored (%s); keep stream', exc)
+                    try:
+                        self.__ensure_active(stream)
+                        stream.write(pcm, exception_on_underflow=False)
+                        self.__writes += 1
+                        return True
+                    except Exception as exc_u:  # noqa: BLE001
+                        logger.debug('UI sound rewrite after underflow failed (%s)', exc_u)
                 logger.warning('UI sound write failed (%s)', exc)
                 if not self.__reopen_used:
                     self.__reopen_used = True
@@ -258,11 +307,9 @@ class PyAudioUiSoundBackend:
                         try:
                             stream = self.__stream
                             assert stream is not None
-                            if not stream.is_active():
-                                stream.start_stream()
+                            self.__ensure_active(stream)
                             stream.write(pcm, exception_on_underflow=False)
-                            if stream.is_active():
-                                stream.stop_stream()
+                            self.__writes += 1
                             return True
                         except Exception as exc2:  # noqa: BLE001
                             logger.warning('UI sound rewrite failed (%s); silencing', exc2)
@@ -273,6 +320,10 @@ class PyAudioUiSoundBackend:
         try:
             import pyaudio
             if self.__stream is not None:
+                try:
+                    self.__stream.stop_stream()
+                except Exception:  # noqa: BLE001
+                    pass
                 try:
                     self.__stream.close()
                 except Exception:  # noqa: BLE001
@@ -317,3 +368,4 @@ class PyAudioUiSoundBackend:
         self.__worker = None
         with self.__lock:
             self._cleanup_pa()
+        logger.debug('UI sound backend closed')

@@ -168,11 +168,16 @@ class UiSoundService:
         return 'unknown'
 
     def test_confirm(self) -> str:
-        """Log selected device and play confirm (dev panel)."""
+        """Log selected device and play confirm via the real play() path (dev panel)."""
         info = self.describe_output()
-        logger.info('UI sound test → device %s volume=%.2f enabled=%s',
-                    info, self.__settings.volume, self.__settings.enabled)
-        self.confirm()
+        if not self.__settings.enabled:
+            logger.warning('UI sound test: enabled=false — enabling for this test play')
+            self.__settings.enabled = True
+        logger.info(
+            'UI sound test → calling play(CONFIRM) device=%s volume=%.2f',
+            info, self.__settings.volume,
+        )
+        self.play(UiSoundEvent.CONFIRM)
         return info
 
     def key(self) -> None:
