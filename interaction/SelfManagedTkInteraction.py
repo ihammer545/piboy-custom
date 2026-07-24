@@ -61,19 +61,23 @@ class SelfManagedTkInteraction(UnifiedInteraction):
         # Staging buffer for partial patches (never shown until a full present).
         self.__staging = Image.new('RGB', resolution, background)
         self.__staging_lock = threading.Lock()
-        # Strong refs for the *currently displayed* PhotoImage + pixels.
         self.__displayed_image: Image.Image = self.__staging.copy()
-        self.__image_tk = ImageTk.PhotoImage(self.__displayed_image)
 
+        # Tk root MUST exist before any PhotoImage (no implicit default root).
         self.__root = tk.Tk()
         self.__root.title('Терминал убежища — симулятор')
         self.__root.configure(bg='#%02x%02x%02x' % ui_background)
         self.__root.config(cursor='none')
 
         w, h = resolution
-        self.__canvas = tk.Canvas(self.__root, width=w, height=h, highlightthickness=0,
-                                  bg='#%02x%02x%02x' % background, cursor='none')
+        self.__canvas = tk.Canvas(
+            self.__root, width=w, height=h, highlightthickness=0,
+            bg='#%02x%02x%02x' % background, cursor='none',
+        )
         self.__canvas.grid(row=0, column=0, rowspan=12, sticky='nw')
+
+        # Strong refs for the currently displayed PhotoImage + pixels.
+        self.__image_tk = ImageTk.PhotoImage(self.__displayed_image, master=self.__root)
         # One permanent image item — only its `image` option is replaced.
         self.__canvas_image = self.__canvas.create_image(
             0, 0, anchor=tk.NW, image=self.__image_tk,
@@ -156,7 +160,7 @@ class SelfManagedTkInteraction(UnifiedInteraction):
             logger.error('Tk present from non-main thread=%s (main=%s)', tid, self.__main_thread_id)
         # Own pixel buffer for PhotoImage; never mutate this while it is displayed.
         owned = frame.copy()
-        photo = ImageTk.PhotoImage(owned)
+        photo = ImageTk.PhotoImage(owned, master=self.__root)
         # Keep strong refs so GC cannot drop the visible image.
         self.__displayed_image = owned
         self.__image_tk = photo
