@@ -34,10 +34,14 @@ class RecordingPort:
         self.output_rate = rate
         self.output_channels = channels
         self.threads = []
+        self.stops = 0
 
     def play_pcm(self, pcm, sample_rate, channels=1):
         self.threads.append(threading.current_thread().name)
         self.plays.append((pcm, sample_rate, channels))
+
+    def stop_current(self):
+        self.stops += 1
 
     def close(self):
         self.closed = True
@@ -283,6 +287,7 @@ def test_stream_lifecycle_no_stop_between_writes():
     b._PyAudioUiSoundBackend__output_channels = 2  # noqa: SLF001
     b._PyAudioUiSoundBackend__writes = 0  # noqa: SLF001
     b._PyAudioUiSoundBackend__warn_once = False  # noqa: SLF001
+    b._PyAudioUiSoundBackend__interrupt_write = False  # noqa: SLF001
 
     pcm = b'\x00\x00' * 100  # tiny stereo-ish buffer
     assert b._PyAudioUiSoundBackend__write_blocking(pcm) is True  # noqa: SLF001

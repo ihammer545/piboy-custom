@@ -13,6 +13,7 @@ class UiSoundEvent(Enum):
     BACK = 'back'
     DENIED = 'denied'
     LOCK = 'lock'
+    BOOT = 'boot'
 
 
 class UiSoundPort(Protocol):
@@ -26,4 +27,8 @@ class UiSoundPort(Protocol):
 
     @property
     def available(self) -> bool:
+        ...
+
+    def stop_current(self) -> None:
+        """Optional: interrupt in-flight playback (e.g. long boot WAV on skip)."""
         ...

@@ -24,6 +24,7 @@ DEFAULT_SOUNDS_DIR = Path('resources') / 'sounds'
 # Click-like events subject to interval debounce and preferential drop.
 _CLICK_EVENTS = frozenset({UiSoundEvent.KEY, UiSoundEvent.TOUCH})
 _PRIORITY = {
+    UiSoundEvent.BOOT: 6,
     UiSoundEvent.LOCK: 5,
     UiSoundEvent.DENIED: 4,
     UiSoundEvent.CONFIRM: 3,
@@ -129,6 +130,7 @@ class UiSoundService:
             UiSoundEvent.BACK: ['back.wav'],
             UiSoundEvent.DENIED: ['denied.wav'],
             UiSoundEvent.LOCK: ['lock.wav'],
+            UiSoundEvent.BOOT: ['boot.wav'],
         }
         dst_rate = int(getattr(self.__port, 'output_rate', 22050) or 22050)
         dst_ch = int(getattr(self.__port, 'output_channels', 1) or 1)
@@ -197,6 +199,20 @@ class UiSoundService:
 
     def lock(self) -> None:
         self.play(UiSoundEvent.LOCK)
+
+    def boot(self) -> None:
+        self.play(UiSoundEvent.BOOT)
+
+    def stop_current(self) -> None:
+        """Drop queued events and interrupt in-flight PCM (boot skip)."""
+        with self.__lock:
+            self.__queue.clear()
+        stopper = getattr(self.__port, 'stop_current', None)
+        if callable(stopper):
+            try:
+                stopper()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug('UI sound stop_current failed (%s)', exc)
 
     def play(self, event: UiSoundEvent) -> None:
         if self.__closed or not self.__settings.enabled:
@@ -314,6 +330,7 @@ class UiSoundService:
             UiSoundEvent.BACK: 700,
             UiSoundEvent.DENIED: 220,
             UiSoundEvent.LOCK: 480,
+            UiSoundEvent.BOOT: 1000,
         }.get(event, 1200)
         samples = []
         for i in range(n):

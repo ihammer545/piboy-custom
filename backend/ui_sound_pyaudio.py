@@ -118,6 +118,7 @@ class PyAudioUiSoundBackend:
         self.__output_channels = 1
         self.__lock = threading.Lock()
         self.__writes = 0
+        self.__interrupt_write = False
         self.__open()
 
     @property
@@ -271,36 +272,55 @@ class PyAudioUiSoundBackend:
             frame_bytes = 2 * max(1, self.__output_channels)
             n_frames = len(pcm) // frame_bytes
             duration_ms = (n_frames / float(self.__output_rate)) * 1000.0 if self.__output_rate else 0.0
-            t0 = time.perf_counter()
             try:
                 self.__ensure_active(stream)
-                logger.debug(
-                    'UI sound write begin bytes=%s frames=%s ch=%s rate=%s dur_ms=%.1f active=%s',
-                    len(pcm), n_frames, self.__output_channels, self.__output_rate,
-                    duration_ms, stream.is_active(),
-                )
-                # Keyword-only underflow flag — do NOT pass False as num_frames.
-                stream.write(pcm, exception_on_underflow=False)
-                self.__writes += 1
-                logger.debug(
-                    'UI sound write end elapsed_ms=%.1f writes=%s active=%s',
-                    (time.perf_counter() - t0) * 1000.0, self.__writes, stream.is_active(),
-                )
-                # Do NOT stop_stream here — that clipped short WAVs before ALSA drained.
-                return True
             except Exception as exc:  # noqa: BLE001
-                # Idle underrun between clicks must not kill the backend.
-                msg = str(exc).lower()
-                if 'underflow' in msg or 'underrun' in msg:
-                    logger.debug('UI sound underflow ignored (%s); keep stream', exc)
-                    try:
+                logger.debug('UI sound ensure_active failed (%s)', exc)
+            ch, rate = self.__output_channels, self.__output_rate
+        t0 = time.perf_counter()
+        logger.debug(
+            'UI sound write begin bytes=%s frames=%s ch=%s rate=%s dur_ms=%.1f',
+            len(pcm), n_frames, ch, rate, duration_ms,
+        )
+        try:
+            # Release lock during blocking write so stop_current can interrupt.
+            stream.write(pcm, exception_on_underflow=False)
+            with self.__lock:
+                self.__writes += 1
+                writes = self.__writes
+            logger.debug(
+                'UI sound write end elapsed_ms=%.1f writes=%s',
+                (time.perf_counter() - t0) * 1000.0, writes,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            with self.__lock:
+                interrupted = self.__interrupt_write
+            if interrupted:
+                logger.debug('UI sound write interrupted (%s)', exc)
+                return True
+            msg = str(exc).lower()
+            if 'underflow' in msg or 'underrun' in msg:
+                logger.debug('UI sound underflow ignored (%s); keep stream', exc)
+                try:
+                    with self.__lock:
+                        stream = self.__stream
+                        if stream is None or self.__closed:
+                            return False
                         self.__ensure_active(stream)
-                        stream.write(pcm, exception_on_underflow=False)
+                    stream.write(pcm, exception_on_underflow=False)
+                    with self.__lock:
                         self.__writes += 1
-                        return True
-                    except Exception as exc_u:  # noqa: BLE001
-                        logger.debug('UI sound rewrite after underflow failed (%s)', exc_u)
-                logger.warning('UI sound write failed (%s)', exc)
+                    return True
+                except Exception as exc_u:  # noqa: BLE001
+                    with self.__lock:
+                        if self.__interrupt_write:
+                            return True
+                    logger.debug('UI sound rewrite after underflow failed (%s)', exc_u)
+            logger.warning('UI sound write failed (%s)', exc)
+            with self.__lock:
+                if self.__interrupt_write:
+                    return True
                 if not self.__reopen_used:
                     self.__reopen_used = True
                     if self.__reopen_stream():
@@ -308,12 +328,27 @@ class PyAudioUiSoundBackend:
                             stream = self.__stream
                             assert stream is not None
                             self.__ensure_active(stream)
-                            stream.write(pcm, exception_on_underflow=False)
-                            self.__writes += 1
-                            return True
                         except Exception as exc2:  # noqa: BLE001
-                            logger.warning('UI sound rewrite failed (%s); silencing', exc2)
-                self.__available = False
+                            logger.warning('UI sound rewrite prepare failed (%s); silencing', exc2)
+                            self.__available = False
+                            return False
+                    else:
+                        self.__available = False
+                        return False
+                else:
+                    self.__available = False
+                    return False
+            try:
+                stream.write(pcm, exception_on_underflow=False)
+                with self.__lock:
+                    self.__writes += 1
+                return True
+            except Exception as exc2:  # noqa: BLE001
+                with self.__lock:
+                    if self.__interrupt_write:
+                        return True
+                    self.__available = False
+                logger.warning('UI sound rewrite failed (%s); silencing', exc2)
                 return False
 
     def __reopen_stream(self) -> bool:
@@ -369,3 +404,41 @@ class PyAudioUiSoundBackend:
         with self.__lock:
             self._cleanup_pa()
         logger.debug('UI sound backend closed')
+
+    def stop_current(self) -> None:
+        """Clear play queue and interrupt a blocking write (boot skip)."""
+        while True:
+            try:
+                item = self.__queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is None and not self.__closed:
+                try:
+                    self.__queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                break
+        with self.__lock:
+            stream = self.__stream
+            if stream is None or self.__closed:
+                return
+            self.__interrupt_write = True
+        try:
+            if stream.is_active():
+                stream.stop_stream()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug('UI sound stop_stream on interrupt (%s)', exc)
+        with self.__lock:
+            try:
+                if self.__stream is not None:
+                    self.__ensure_active(self.__stream)
+            except Exception:  # noqa: BLE001
+                try:
+                    self.__reopen_stream()
+                except Exception as exc2:  # noqa: BLE001
+                    logger.debug('UI sound reopen after stop_current failed (%s)', exc2)
+            self.__interrupt_write = False
+            logger.debug(
+                'UI sound stop_current done active=%s',
+                bool(self.__stream and self.__stream.is_active()),
+            )

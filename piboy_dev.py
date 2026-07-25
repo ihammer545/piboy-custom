@@ -6,7 +6,7 @@ from backend.simulator import SimulatorBackend
 from environment import Environment
 from interaction.SelfManagedTkInteraction import SelfManagedTkInteraction
 from interaction.touch.simulator import SimulatorTouchInput
-from piboy import AppModule, AppState, register_shelter_apps
+from piboy import AppModule, AppState, register_shelter_apps, run_boot_then_enter
 from services.terminal import DeviceService, IntercomService, SensorService
 
 """
@@ -105,8 +105,7 @@ if __name__ == '__main__':
     app_state.bind_display(__tk)
     register_shelter_apps(injector, app_state)
 
-    app_state.update_display(__tk)
-    app_state.active_app.on_app_enter()
+    run_boot_then_enter(app_state, __tk)
 
     threading.Thread(target=app_state.watch_function, args=(__tk,), daemon=True).start()
 

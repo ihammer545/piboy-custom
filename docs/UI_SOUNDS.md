@@ -6,8 +6,11 @@
 UI action → UiSoundService → UiSoundPort → Null | PyAudio (ALSA on Pi)
 ```
 
-Apps never call PyAudio. Semantic events: `key`, `touch`, `confirm`, `back`, `denied`, `lock`.
+Apps never call PyAudio. Semantic events: `key`, `touch`, `confirm`, `back`, `denied`, `lock`, `boot`.
 Disabled hits stay **silent**.
+
+At startup (when `boot_splash: true`), the shell shows a POST splash and plays `boot.wav`
+before entering the first tab app. Touch/key after ~1.5 s skips the splash and stops boot audio.
 
 ## Important: which config files are used
 
@@ -81,7 +84,8 @@ JACK is not required. Order when resolving the PortAudio device:
 4. First real output (ALSA preferred over JACK)
 
 Stream: typically stereo @ 44100/48000; mono 22050 assets converted once at preload.
-Blocking `write` in one worker; `stop_stream` between clicks.
+Blocking `write` in one worker; stream stays open between short clicks. Long `boot`
+playback can be interrupted via `stop_current()` when the splash is skipped.
 
 ## Full YAML example
 
@@ -92,6 +96,7 @@ audio: !AudioConfig
     volume: 0.35
     clicks_during_call: false
     min_interval_ms: 30
+    boot_splash: true
     output_device_index: 0
     output_device_name: null
 ```
@@ -99,6 +104,12 @@ audio: !AudioConfig
 ## Assets
 
 `resources/sounds/*.wav` — mono 16-bit PCM @ 22050 Hz.
+
+`key_*.wav` / `touch_*.wav` are procedural **mechanical keyboard** clicks
+(impact noise + short housing modes), not tonal beeps.
+
+`boot.wav` (~7.2 s) — classic PC POST beep + floppy seek/read; played once at
+startup splash (`UiSoundEvent.BOOT`). Regenerate:
 
 ```bash
 .venv/bin/python scripts/generate_ui_sounds.py

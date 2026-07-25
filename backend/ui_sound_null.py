@@ -28,3 +28,6 @@ class NullUiSoundBackend:
 
     def describe_output(self) -> str:
         return 'null'
+
+    def stop_current(self) -> None:
+        return

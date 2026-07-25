@@ -162,6 +162,7 @@ class UiSoundsConfig:
     min_interval_ms: int = 30
     output_device_index: int | None = None
     output_device_name: str | None = None
+    boot_splash: bool = True
 
 
 @dataclass
@@ -595,6 +596,7 @@ def _merge_ui_sounds(dst: UiSoundsConfig, src: UiSoundsConfig) -> None:
     dst.volume = src.volume
     dst.clicks_during_call = src.clicks_during_call
     dst.min_interval_ms = src.min_interval_ms
+    dst.boot_splash = src.boot_splash
     if src.output_device_index is not None:
         dst.output_device_index = src.output_device_index
     if src.output_device_name:
@@ -638,6 +640,8 @@ def _apply_local_yaml(env: Environment, local_path: str) -> None:
                     env.audio.ui_sounds.clicks_during_call = bool(ui['clicks_during_call'])
                 if 'min_interval_ms' in ui:
                     env.audio.ui_sounds.min_interval_ms = int(ui['min_interval_ms'])
+                if 'boot_splash' in ui:
+                    env.audio.ui_sounds.boot_splash = bool(ui['boot_splash'])
                 if ui.get('output_device_index') is not None:
                     env.audio.ui_sounds.output_device_index = int(ui['output_device_index'])
                 if ui.get('output_device_name'):

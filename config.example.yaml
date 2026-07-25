@@ -57,11 +57,12 @@ crt: !CrtConfig
   # grain_fps: 5
   grain_seed: 42
 audio: !AudioConfig
-  ui_sounds: !UiSoundsConfig
+    ui_sounds: !UiSoundsConfig
     enabled: true
     volume: 0.35
     clicks_during_call: false
     min_interval_ms: 30
+    boot_splash: true
   # output_device_index: 0
   # output_device_name: "plughw"
   # Prefer config.local.yaml or PIBOY_UI_SOUND_DEVICE_INDEX for machine-local devices.

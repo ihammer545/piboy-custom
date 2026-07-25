@@ -181,6 +181,10 @@ class SelfManagedTkInteraction(UnifiedInteraction):
         else:
             self.__schedule_on_main(fn)
 
+    def call_later(self, delay_ms: int, fn: Callable[[], None]) -> None:
+        """Schedule ``fn`` on the Tk main thread after ``delay_ms``."""
+        self.__root.after(max(0, int(delay_ms)), fn)
+
     def __digit(self, digit: str):
         if self.__on_digit:
             self.__on_digit(digit)

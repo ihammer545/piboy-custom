@@ -15,6 +15,7 @@ from app.EventLogApp import EventLogApp
 from app.IntercomApp import IntercomApp
 from app.SensorsApp import SensorsApp
 from app.SystemApp import SystemApp
+from app.boot_sequence import BootSequence
 from app.ui_kit import fit_text, make_hit
 from backend.simulator import SimulatorBackend
 from environment import AppConfig, BackendMode, Environment, force_simulator
@@ -79,6 +80,8 @@ class AppState:
             height=e.app_config.height,
         ))
         self.__render_gate = RenderGate()
+        self.__boot: BootSequence | None = None
+        self.__boot_entered = False
 
     @property
     def crt(self) -> CRTRenderer:
@@ -87,6 +90,14 @@ class AppState:
     @property
     def sounds(self) -> UiSoundService:
         return self.__sounds
+
+    @property
+    def boot_active(self) -> bool:
+        return self.__boot is not None
+
+    @property
+    def boot_sequence(self) -> BootSequence | None:
+        return self.__boot
 
     @property
     def render_gate(self) -> RenderGate:
@@ -200,6 +211,8 @@ class AppState:
         display = self.__display
         if display is None:
             return
+        if self.__try_skip_boot(display):
+            return
         # Display → logical UI (identity when CRT off / curvature=0)
         ux, uy = self.__crt.display_to_ui(event.x, event.y)
         # Footer is non-interactive
@@ -225,18 +238,24 @@ class AppState:
             self.update_display(display, partial=True)
 
     def on_digit_key(self, digit: str, display: Display):
+        if self.__try_skip_boot(display):
+            return
         if self.active_app.on_digit(digit):
             if self.active_app.emits_tap_sound:
                 self.__sounds.key()
             self.update_display(display, partial=True)
 
     def on_backspace_key(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         if self.active_app.on_backspace():
             if self.active_app.emits_tap_sound:
                 self.__sounds.back()
             self.update_display(display, partial=True)
 
     def on_clear_key(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         # Delete / clear maps to B for AccessApp
         self.active_app.on_key_b()
         if self.active_app.emits_tap_sound:
@@ -255,6 +274,13 @@ class AppState:
                 self.__watch_tick(display)
 
     def __watch_tick(self, display: Display) -> None:
+        if self.__boot is not None:
+            # Keep splash alive; finish if the sequence completed without a tick.
+            if self.__boot.is_done():
+                self.finish_boot_sequence(display)
+            else:
+                self.update_display(display, partial=False)
+            return
         if self.__crt.enabled:
             # Full compose + CRT; must not race with input renders.
             self.update_display(display, partial=False)
@@ -267,6 +293,15 @@ class AppState:
     def compose_frame(self) -> Image.Image:
         """Build a full logical UI frame (no CRT) into a fresh buffer."""
         image = self.clear_buffer()
+        if self.__boot is not None:
+            cfg = self.__environment.app_config
+            self.__boot.render(
+                image,
+                accent=cfg.accent,
+                font=cfg.font_standard,
+                background=cfg.background,
+            )
+            return image.copy()
         app_bbox = (self.__environment.app_config.app_side_offset,
                     self.__environment.app_config.app_top_offset,
                     self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
@@ -285,11 +320,12 @@ class AppState:
         Concurrent callers coalesce via RenderGate — no parallel CRT passes.
         """
         def _render():
-            if self.__crt.enabled:
-                # Always full-frame when CRT is on (partial patches cannot carry FX).
+            # Boot splash and CRT both need a full composed frame.
+            if self.__boot is not None or self.__crt.enabled:
                 frame = self.compose_frame()
-                processed = self.__crt.process(frame, ui_changed=True)
-                display.show(processed, 0, 0)
+                if self.__crt.enabled:
+                    frame = self.__crt.process(frame, ui_changed=True)
+                display.show(frame, 0, 0)
                 return
 
             image = self.clear_buffer()
@@ -317,39 +353,109 @@ class AppState:
             return
         self.__render_gate.request(_render)
 
+    def __try_skip_boot(self, display: Display) -> bool:
+        """If splash is active, attempt skip (after min time). Returns True if input consumed."""
+        boot = self.__boot
+        if boot is None:
+            return False
+        if boot.skip():
+            self.__sounds.stop_current()
+            self.finish_boot_sequence(display)
+        return True
+
+    def begin_boot_sequence(self) -> None:
+        """Start POST splash + boot.wav (idempotent while already active)."""
+        if self.__boot is not None:
+            return
+        self.__boot = BootSequence()
+        self.__boot_entered = False
+        self.__sounds.boot()
+        logger.info('Boot splash started (duration=%.1fs)', self.__boot.duration_s)
+
+    def finish_boot_sequence(self, display: Display) -> None:
+        """Leave splash, paint normal UI, enter first app once."""
+        if self.__boot is None and self.__boot_entered:
+            return
+        self.__boot = None
+        self.update_display(display, partial=False)
+        if not self.__boot_entered and self.__apps:
+            self.__boot_entered = True
+            self.active_app.on_app_enter()
+            logger.info('Boot splash finished → %s', self.active_app.title)
+
+    def arm_boot_scheduler(self, display: Display, interval_ms: int = 80) -> None:
+        """Schedule splash redraws on Tk (call_later) until done."""
+        def tick():
+            if self.__boot is None:
+                return
+            if self.__boot.is_done():
+                self.finish_boot_sequence(display)
+                return
+            self.update_display(display, partial=False)
+            call_later = getattr(display, 'call_later', None)
+            if callable(call_later):
+                call_later(interval_ms, tick)
+            else:
+                call_soon = getattr(display, 'call_soon', None)
+                if callable(call_soon):
+                    # Best-effort without delay API.
+                    call_soon(tick)
+
+        call_later = getattr(display, 'call_later', None)
+        if callable(call_later):
+            call_later(0, tick)
+        else:
+            call_soon = getattr(display, 'call_soon', None)
+            if callable(call_soon):
+                call_soon(tick)
+
     def on_key_left(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.__sounds.key()
         self.active_app.on_key_left()
         self.update_display(display, partial=True)
 
     def on_key_right(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.__sounds.key()
         self.active_app.on_key_right()
         self.update_display(display, partial=True)
 
     def on_key_up(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.__sounds.key()
         self.active_app.on_key_up()
         self.update_display(display, partial=True)
 
     def on_key_down(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.__sounds.key()
         self.active_app.on_key_down()
         self.update_display(display, partial=True)
 
     def on_key_a(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.active_app.on_key_a()
         if self.active_app.emits_tap_sound:
             self.__sounds.confirm()
         self.update_display(display, partial=True)
 
     def on_key_b(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.active_app.on_key_b()
         if self.active_app.emits_tap_sound:
             self.__sounds.back()
         self.update_display(display, partial=True)
 
     def on_rotary_increase(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.active_app.on_app_leave()
         self.next_app()
         self.active_app.on_app_enter()
@@ -357,11 +463,36 @@ class AppState:
         self.update_display(display, partial=False)
 
     def on_rotary_decrease(self, display: Display):
+        if self.__try_skip_boot(display):
+            return
         self.active_app.on_app_leave()
         self.previous_app()
         self.active_app.on_app_enter()
         self.__sounds.touch()
         self.update_display(display, partial=False)
+
+
+def run_boot_then_enter(app_state: AppState, display: Display) -> None:
+    """
+    Show POST splash + boot.wav, then enter the first app.
+    Tk displays schedule ticks asynchronously (must call before mainloop).
+    Other displays block until the sequence finishes.
+    """
+    if not app_state.environment.audio.ui_sounds.boot_splash:
+        app_state.finish_boot_sequence(display)
+        return
+    app_state.begin_boot_sequence()
+    app_state.update_display(display, partial=False)
+    if callable(getattr(display, 'call_later', None)) or callable(getattr(display, 'call_soon', None)):
+        app_state.arm_boot_scheduler(display)
+        return
+    while app_state.boot_active:
+        seq = app_state.boot_sequence
+        if seq is None or seq.is_done():
+            break
+        time.sleep(0.08)
+        app_state.update_display(display, partial=False)
+    app_state.finish_boot_sequence(display)
 
 
 class AppModule(Module):
@@ -699,8 +830,7 @@ if __name__ == '__main__':
     app_state.bind_touch_source(touch_source)
 
     DISPLAY.show(app_state.image_buffer, 0, 0)
-    app_state.update_display(DISPLAY)
-    app_state.active_app.on_app_enter()
+    run_boot_then_enter(app_state, DISPLAY)
 
     try:
         app_state.watch_function(DISPLAY)

@@ -74,3 +74,24 @@ def test_apply_env_override_helper(monkeypatch):
     monkeypatch.setenv('PIBOY_UI_SOUND_DEVICE_INDEX', '0')
     assert apply_ui_sound_env_overrides(env) == 'env'
     assert env.audio.ui_sounds.output_device_index == 0
+
+
+def test_default_boot_splash_enabled():
+    assert UiSoundsConfig().boot_splash is True
+
+
+def test_local_yaml_boot_splash_override(tmp_path: Path, monkeypatch):
+    cfg = tmp_path / 'config.yaml'
+    local = tmp_path / 'config.local.yaml'
+    environment.configure()
+    environment.save(Environment(), str(cfg))
+    local.write_text(
+        'audio:\n'
+        '  ui_sounds: !UiSoundsConfig\n'
+        '    boot_splash: false\n',
+        encoding='utf-8',
+    )
+    monkeypatch.delenv('PIBOY_UI_SOUND_DEVICE_INDEX', raising=False)
+    monkeypatch.delenv('PIBOY_UI_SOUND_DEVICE_NAME', raising=False)
+    env = load_runtime_environment(str(cfg), str(local), create_if_missing=False)
+    assert env.audio.ui_sounds.boot_splash is False
