@@ -123,6 +123,10 @@ class UiSoundService:
         """Load all UI WAVs into memory once; convert to port output format once."""
         if self.__preloaded:
             return
+        self.__reload_samples()
+        self.__preloaded = True
+
+    def __reload_samples(self) -> None:
         mapping = {
             UiSoundEvent.KEY: ['key_a.wav', 'key_b.wav', 'key_c.wav'],
             UiSoundEvent.TOUCH: ['touch_a.wav', 'touch_b.wav', 'touch_c.wav'],
@@ -134,6 +138,7 @@ class UiSoundService:
         }
         dst_rate = int(getattr(self.__port, 'output_rate', 22050) or 22050)
         dst_ch = int(getattr(self.__port, 'output_channels', 1) or 1)
+        samples: dict[UiSoundEvent, list[_Sample]] = {}
         for event, names in mapping.items():
             loaded: list[_Sample] = []
             for name in names:
@@ -160,8 +165,8 @@ class UiSoundService:
                     dst_channels=dst_ch,
                 )
                 loaded.append(_Sample(pcm=pcm, rate=dst_rate, channels=dst_ch))
-            self.__samples[event] = loaded
-        self.__preloaded = True
+            samples[event] = loaded
+        self.__samples = samples
 
     def describe_output(self) -> str:
         fn = getattr(self.__port, 'describe_output', None)
@@ -213,6 +218,55 @@ class UiSoundService:
                 stopper()
             except Exception as exc:  # noqa: BLE001
                 logger.debug('UI sound stop_current failed (%s)', exc)
+
+    def list_output_devices(self):
+        """Ranked output devices (best first). Apps must not import PyAudio."""
+        from backend.ui_sound_device import rank_output_devices
+        lister = getattr(self.__port, 'list_devices', None)
+        if callable(lister):
+            try:
+                devices = lister()
+                if devices:
+                    return rank_output_devices(devices)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug('port.list_devices failed (%s)', exc)
+        return list_host_output_devices()
+
+    def current_device_index(self) -> int | None:
+        sel = getattr(self.__port, 'selected_device', None)
+        if sel is not None:
+            return int(sel.index)
+        return self.__settings.output_device_index
+
+    def rebind_output(
+        self,
+        index: int | None = None,
+        name: str | None = None,
+        *,
+        selection_source: str = 'config',
+    ) -> str:
+        """Close current backend and open another device; reload PCM formats."""
+        if self.__closed:
+            return 'closed'
+        self.stop_current()
+        old = self.__port
+        try:
+            old.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug('UI sound old port close (%s)', exc)
+        self.__settings.output_device_index = index
+        self.__settings.output_device_name = name
+        self.__port = open_ui_sound_port(
+            prefer_pyaudio=True,
+            device_index=index,
+            device_name=name,
+            selection_source=selection_source,
+        )
+        self.__reload_samples()
+        self.__preloaded = True
+        info = self.describe_output()
+        logger.info('UI sound rebound → %s', info)
+        return info
 
     def play(self, event: UiSoundEvent) -> None:
         if self.__closed or not self.__settings.enabled:
@@ -368,3 +422,21 @@ def open_ui_sound_port(
     except Exception as exc:  # noqa: BLE001
         logger.warning('UI sound backend init failed (%s); using Null', exc)
     return NullUiSoundBackend()
+
+
+def list_host_output_devices():
+    """Enumerate PortAudio outputs without keeping a backend open."""
+    from backend.ui_sound_device import rank_output_devices
+    try:
+        import pyaudio
+        from backend.ui_sound_pyaudio import _suppress_alsa_enumeration_noise, enumerate_devices
+        with _suppress_alsa_enumeration_noise():
+            pa = pyaudio.PyAudio()
+            try:
+                devices, _ = enumerate_devices(pa)
+            finally:
+                pa.terminate()
+        return rank_output_devices(devices)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug('list_host_output_devices failed (%s)', exc)
+        return []

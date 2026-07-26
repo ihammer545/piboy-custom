@@ -163,6 +163,7 @@ class UiSoundsConfig:
     output_device_index: int | None = None
     output_device_name: str | None = None
     boot_splash: bool = True
+    audio_setup_done: bool = False
 
 
 @dataclass
@@ -597,6 +598,7 @@ def _merge_ui_sounds(dst: UiSoundsConfig, src: UiSoundsConfig) -> None:
     dst.clicks_during_call = src.clicks_during_call
     dst.min_interval_ms = src.min_interval_ms
     dst.boot_splash = src.boot_splash
+    dst.audio_setup_done = src.audio_setup_done
     if src.output_device_index is not None:
         dst.output_device_index = src.output_device_index
     if src.output_device_name:
@@ -642,10 +644,14 @@ def _apply_local_yaml(env: Environment, local_path: str) -> None:
                     env.audio.ui_sounds.min_interval_ms = int(ui['min_interval_ms'])
                 if 'boot_splash' in ui:
                     env.audio.ui_sounds.boot_splash = bool(ui['boot_splash'])
+                if 'audio_setup_done' in ui:
+                    env.audio.ui_sounds.audio_setup_done = bool(ui['audio_setup_done'])
                 if ui.get('output_device_index') is not None:
                     env.audio.ui_sounds.output_device_index = int(ui['output_device_index'])
                 if ui.get('output_device_name'):
                     env.audio.ui_sounds.output_device_name = str(ui['output_device_name'])
+        if 'audio_setup_done' in data:
+            env.audio.ui_sounds.audio_setup_done = bool(data['audio_setup_done'])
 
 
 def apply_ui_sound_env_overrides(env: Environment) -> str | None:
@@ -719,3 +725,85 @@ def load_runtime_environment(
         env.audio.ui_sounds.output_device_name,
     )
     return env
+
+
+def save_ui_sound_local(
+    *,
+    index: int | None = None,
+    name: str | None = None,
+    setup_done: bool = True,
+    clear_index: bool = False,
+    local_path: str = 'config.local.yaml',
+    env: Environment | None = None,
+) -> None:
+    """
+    Persist UI sound device choice into config.local.yaml (gitignored).
+
+    Updates in-memory ``env.audio.ui_sounds`` when ``env`` is provided.
+    """
+    configure()
+    data: dict = {}
+    if os.path.isfile(local_path):
+        try:
+            with open(local_path, 'r') as f:
+                loaded = yaml.load(f, FullLoader)
+            if isinstance(loaded, dict):
+                data = dict(loaded)
+            elif isinstance(loaded, UiSoundsConfig):
+                data = {
+                    'output_device_index': loaded.output_device_index,
+                    'output_device_name': loaded.output_device_name,
+                    'audio_setup_done': loaded.audio_setup_done,
+                }
+            elif isinstance(loaded, AudioConfig):
+                ui = loaded.ui_sounds
+                data = {
+                    'output_device_index': ui.output_device_index,
+                    'output_device_name': ui.output_device_name,
+                    'audio_setup_done': ui.audio_setup_done,
+                }
+            elif isinstance(loaded, Environment):
+                ui = loaded.audio.ui_sounds
+                data = {
+                    'output_device_index': ui.output_device_index,
+                    'output_device_name': ui.output_device_name,
+                    'audio_setup_done': ui.audio_setup_done,
+                }
+        except Exception as exc:  # noqa: BLE001
+            _log.warning('Could not read %s (%s); rewriting', local_path, exc)
+            data = {}
+
+    if clear_index:
+        data.pop('output_device_index', None)
+        data['output_device_index'] = None
+    elif index is not None:
+        data['output_device_index'] = int(index)
+    if name is not None:
+        data['output_device_name'] = str(name) if name else None
+    data['audio_setup_done'] = bool(setup_done)
+
+    # Keep a compact shorthand file for machine-local overrides.
+    out = {
+        'output_device_index': data.get('output_device_index'),
+        'output_device_name': data.get('output_device_name'),
+        'audio_setup_done': data.get('audio_setup_done', True),
+    }
+    with open(local_path, 'w') as f:
+        yaml.dump(out, f, default_flow_style=False, allow_unicode=True)
+
+    if env is not None:
+        ui = env.audio.ui_sounds
+        if clear_index:
+            ui.output_device_index = None
+        elif index is not None:
+            ui.output_device_index = int(index)
+        if name is not None:
+            ui.output_device_name = str(name) if name else None
+        ui.audio_setup_done = bool(setup_done)
+        RUNTIME.ui_sound_device_source = resolve_ui_sound_device_source(env, None)
+
+    _log.info(
+        'Saved UI sound local device index=%s name=%s setup_done=%s → %s',
+        out.get('output_device_index'), out.get('output_device_name'),
+        out.get('audio_setup_done'), os.path.abspath(local_path),
+    )

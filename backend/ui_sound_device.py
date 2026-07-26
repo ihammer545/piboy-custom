@@ -17,6 +17,15 @@ class AudioDeviceInfo:
     is_default_output: bool = False
 
 
+_ABSTRACT_NAME_TOKENS = (
+    'default', 'null', 'dbus', 'jack', 'speex', 'pulse', 'surround',
+)
+_CONCRETE_NAME_TOKENS = (
+    'hw:', 'plughw', 'hda', 'analog', 'usb', 'bcm2835', 'headphones',
+    'speaker', 'hdmi',
+)
+
+
 def is_output_device(dev: AudioDeviceInfo) -> bool:
     return int(dev.max_output_channels) > 0
 
@@ -35,6 +44,49 @@ def _prefer_host(host_api: str) -> int:
     return 10
 
 
+def is_abstract_output_name(name: str) -> bool:
+    """True for PortAudio abstract sinks that often open but stay silent."""
+    n = (name or '').lower().strip()
+    if not n:
+        return True
+    # Exact-ish abstract device labels
+    if n in ('default', 'null', 'pulse', 'jack', 'dbus'):
+        return True
+    for tok in _ABSTRACT_NAME_TOKENS:
+        if n == tok or n.startswith(tok + ' ') or n.startswith(tok + ':'):
+            return True
+    # "default" appearing as whole word in short names
+    if n == 'sysdefault' or n.startswith('sysdefault'):
+        return True
+    return False
+
+
+def is_concrete_output_name(name: str) -> bool:
+    n = (name or '').lower()
+    return any(tok in n for tok in _CONCRETE_NAME_TOKENS)
+
+
+def device_rank_key(dev: AudioDeviceInfo) -> tuple:
+    """Lower tuple = better candidate for auto selection."""
+    abstract = 1 if is_abstract_output_name(dev.name) else 0
+    concrete = 0 if is_concrete_output_name(dev.name) else 1
+    # Prefer marked default only among concrete devices; abstract defaults last.
+    default_pen = 0 if (dev.is_default_output and not abstract) else (2 if abstract else 1)
+    return (
+        abstract,
+        concrete,
+        _prefer_host(dev.host_api),
+        default_pen,
+        int(dev.index),
+    )
+
+
+def rank_output_devices(devices: Sequence[AudioDeviceInfo]) -> list[AudioDeviceInfo]:
+    """All output devices, best-first (concrete ALSA/hw before abstract default)."""
+    outputs = [d for d in devices if is_output_device(d)]
+    return sorted(outputs, key=device_rank_key)
+
+
 def select_output_device(
     devices: Sequence[AudioDeviceInfo],
     *,
@@ -47,9 +99,9 @@ def select_output_device(
 
     Returns (device, reason) where reason is:
       - ``configured_index`` / ``configured_name`` when user config/env applied
-      - ``default`` / ``first_output`` for auto selection
+      - ``ranked`` / ``default`` / ``first_output`` for auto selection
 
-    Input-only devices are skipped. JACK-only hosts are deprioritized.
+    Input-only devices are skipped. Abstract defaults lose to concrete hw devices.
     """
     outputs = [d for d in devices if is_output_device(d)]
     if not outputs:
@@ -59,27 +111,37 @@ def select_output_device(
         for d in outputs:
             if d.index == int(configured_index):
                 return d, 'configured_index'
-        # Invalid configured index — fall through to name / default / first.
+        # Invalid configured index — fall through to name / ranked auto.
 
     if configured_name:
         needle = configured_name.lower().strip()
         matches = [d for d in outputs if needle in d.name.lower()]
         if matches:
-            matches.sort(key=lambda d: (_prefer_host(d.host_api), d.index))
+            matches.sort(key=device_rank_key)
             return matches[0], 'configured_name'
 
+    ranked = rank_output_devices(outputs)
+    concrete = [d for d in ranked if not is_abstract_output_name(d.name)]
+
+    # Prefer PortAudio default only when it is concrete (or no concrete exists).
     if default_output_index is not None:
         for d in outputs:
             if d.index == int(default_output_index):
-                return d, 'default'
+                if not is_abstract_output_name(d.name) or not concrete:
+                    return d, 'default'
+                break
 
     marked = [d for d in outputs if d.is_default_output]
     if marked:
-        marked.sort(key=lambda d: (_prefer_host(d.host_api), d.index))
-        return marked[0], 'default'
+        marked_sorted = sorted(marked, key=device_rank_key)
+        best_marked = marked_sorted[0]
+        if not is_abstract_output_name(best_marked.name) or not concrete:
+            return best_marked, 'default'
 
-    outputs_sorted = sorted(outputs, key=lambda d: (_prefer_host(d.host_api), d.index))
-    return outputs_sorted[0], 'first_output'
+    if ranked:
+        reason = 'ranked' if not is_abstract_output_name(ranked[0].name) else 'first_output'
+        return ranked[0], reason
+    return None, 'none'
 
 
 def choose_stream_channels(device: AudioDeviceInfo, prefer: int = 1) -> int:

@@ -160,6 +160,12 @@ class PyAudioUiSoundBackend:
             f'source={self.__selection_source} pick={self.__pick_reason}'
         )
 
+    def list_devices(self):
+        if self.__pa is None:
+            return []
+        devices, _ = enumerate_devices(self.__pa)
+        return [d for d in devices if d.max_output_channels > 0]
+
     def __open(self) -> None:
         try:
             import pyaudio

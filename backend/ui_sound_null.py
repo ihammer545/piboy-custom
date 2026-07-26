@@ -31,3 +31,6 @@ class NullUiSoundBackend:
 
     def stop_current(self) -> None:
         return
+
+    def list_devices(self):
+        return []

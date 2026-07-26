@@ -15,10 +15,12 @@ from app.EventLogApp import EventLogApp
 from app.IntercomApp import IntercomApp
 from app.SensorsApp import SensorsApp
 from app.SystemApp import SystemApp
+from app.audio_setup import AudioSetupSession
 from app.boot_sequence import BootSequence
 from app.ui_kit import fit_text, make_hit
 from backend.simulator import SimulatorBackend
 from environment import AppConfig, BackendMode, Environment, force_simulator
+import environment
 from interaction.Display import Display
 from interaction.Input import Input
 from interaction.UnifiedInteraction import UnifiedInteraction
@@ -82,6 +84,7 @@ class AppState:
         self.__render_gate = RenderGate()
         self.__boot: BootSequence | None = None
         self.__boot_entered = False
+        self.__audio_setup: AudioSetupSession | None = None
 
     @property
     def crt(self) -> CRTRenderer:
@@ -98,6 +101,10 @@ class AppState:
     @property
     def boot_sequence(self) -> BootSequence | None:
         return self.__boot
+
+    @property
+    def audio_setup_active(self) -> bool:
+        return self.__audio_setup is not None
 
     @property
     def render_gate(self) -> RenderGate:
@@ -213,8 +220,12 @@ class AppState:
             return
         if self.__try_skip_boot(display):
             return
-        # Display → logical UI (identity when CRT off / curvature=0)
         ux, uy = self.__crt.display_to_ui(event.x, event.y)
+        if self.__audio_setup is not None:
+            action = self.__audio_setup.handle_tap(ux, uy)
+            if action:
+                self.__handle_audio_setup_action(action, display)
+            return
         # Footer is non-interactive
         if self.__footer_rect is not None and self.__footer_rect.contains(ux, uy):
             return
@@ -240,6 +251,8 @@ class AppState:
     def on_digit_key(self, digit: str, display: Display):
         if self.__try_skip_boot(display):
             return
+        if self.__audio_setup is not None:
+            return
         if self.active_app.on_digit(digit):
             if self.active_app.emits_tap_sound:
                 self.__sounds.key()
@@ -248,6 +261,9 @@ class AppState:
     def on_backspace_key(self, display: Display):
         if self.__try_skip_boot(display):
             return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action('skip', display)
+            return
         if self.active_app.on_backspace():
             if self.active_app.emits_tap_sound:
                 self.__sounds.back()
@@ -255,6 +271,8 @@ class AppState:
 
     def on_clear_key(self, display: Display):
         if self.__try_skip_boot(display):
+            return
+        if self.__audio_setup is not None:
             return
         # Delete / clear maps to B for AccessApp
         self.active_app.on_key_b()
@@ -275,17 +293,17 @@ class AppState:
 
     def __watch_tick(self, display: Display) -> None:
         if self.__boot is not None:
-            # Keep splash alive; finish if the sequence completed without a tick.
             if self.__boot.is_done():
                 self.finish_boot_sequence(display)
             else:
                 self.update_display(display, partial=False)
             return
+        if self.__audio_setup is not None:
+            self.update_display(display, partial=False)
+            return
         if self.__crt.enabled:
-            # Full compose + CRT; must not race with input renders.
             self.update_display(display, partial=False)
         else:
-            # Footer-only refresh still goes through Display.show (presenter).
             image, x0, y0 = draw_footer(self.image_buffer, self)
             display.show(image, x0, y0)
         self.__tick()
@@ -293,8 +311,8 @@ class AppState:
     def compose_frame(self) -> Image.Image:
         """Build a full logical UI frame (no CRT) into a fresh buffer."""
         image = self.clear_buffer()
+        cfg = self.__environment.app_config
         if self.__boot is not None:
-            cfg = self.__environment.app_config
             self.__boot.render(
                 image,
                 accent=cfg.accent,
@@ -302,16 +320,25 @@ class AppState:
                 background=cfg.background,
             )
             return image.copy()
-        app_bbox = (self.__environment.app_config.app_side_offset,
-                    self.__environment.app_config.app_top_offset,
-                    self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
-                    self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
+        if self.__audio_setup is not None:
+            self.__audio_setup.render(
+                image,
+                accent=cfg.accent,
+                accent_dark=cfg.accent_dark,
+                font=cfg.font_standard,
+                header=cfg.font_header,
+                background=cfg.background,
+            )
+            return image.copy()
+        app_bbox = (cfg.app_side_offset,
+                    cfg.app_top_offset,
+                    cfg.width - cfg.app_side_offset,
+                    cfg.height - cfg.app_bottom_offset)
         x_offset, y_offset = app_bbox[0:2]
         for _patch, _x0, _y0 in draw_base(image, self):
             pass
         for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), False):
             image.paste(patch, (x0 + x_offset, y0 + y_offset))
-        # Return a detached copy so CRT/present never share the live UI buffer.
         return image.copy()
 
     def update_display(self, display: Display, partial=False):
@@ -320,8 +347,8 @@ class AppState:
         Concurrent callers coalesce via RenderGate — no parallel CRT passes.
         """
         def _render():
-            # Boot splash and CRT both need a full composed frame.
-            if self.__boot is not None or self.__crt.enabled:
+            overlay = self.__boot is not None or self.__audio_setup is not None
+            if overlay or self.__crt.enabled:
                 frame = self.compose_frame()
                 if self.__crt.enabled:
                     frame = self.__crt.process(frame, ui_changed=True)
@@ -344,8 +371,6 @@ class AppState:
                     image.paste(patch, (x0 + x_offset, y0 + y_offset))
                 display.show(image.crop(app_bbox), x_offset, y_offset)
 
-        # If a Tk display asks that work run on the main thread, honor it when
-        # we are not already there (e.g. watch timer thread).
         call_soon = getattr(display, 'call_soon', None)
         is_main = getattr(display, 'is_main_thread', None)
         if callable(call_soon) and callable(is_main) and not is_main():
@@ -363,6 +388,62 @@ class AppState:
             self.finish_boot_sequence(display)
         return True
 
+    def __needs_audio_setup(self) -> bool:
+        ui = self.__environment.audio.ui_sounds
+        if ui.audio_setup_done:
+            return False
+        if environment.RUNTIME.ui_sound_device_source == 'env':
+            return False
+        return True
+
+    def begin_audio_setup(self, display: Display) -> None:
+        if self.__audio_setup is not None:
+            return
+        devices = self.__sounds.list_output_devices()
+        start = self.__sounds.current_device_index()
+        self.__audio_setup = AudioSetupSession(devices, start_index=start)
+        logger.info('Audio setup started (%s devices)', len(devices))
+        self.update_display(display, partial=False)
+        self.__sounds.test_confirm()
+
+    def finish_audio_setup(self, display: Display) -> None:
+        self.__audio_setup = None
+        self.__enter_main_ui(display)
+
+    def __handle_audio_setup_action(self, action: str, display: Display) -> None:
+        session = self.__audio_setup
+        if session is None:
+            return
+        if action == 'hear':
+            cur = session.current
+            environment.save_ui_sound_local(
+                index=cur.index if cur else None,
+                name=cur.name if cur else None,
+                setup_done=True,
+                env=self.__environment,
+            )
+            session.mark_hear()
+            self.finish_audio_setup(display)
+            return
+        if action == 'next':
+            nxt = session.next_device()
+            if nxt is not None:
+                self.__sounds.rebind_output(nxt.index, selection_source='config')
+                self.__sounds.test_confirm()
+            self.update_display(display, partial=False)
+            return
+        if action == 'skip':
+            environment.save_ui_sound_local(setup_done=True, env=self.__environment)
+            session.mark_skip()
+            self.finish_audio_setup(display)
+
+    def __enter_main_ui(self, display: Display) -> None:
+        self.update_display(display, partial=False)
+        if not self.__boot_entered and self.__apps:
+            self.__boot_entered = True
+            self.active_app.on_app_enter()
+            logger.info('Main UI entered → %s', self.active_app.title)
+
     def begin_boot_sequence(self) -> None:
         """Start POST splash + boot.wav (idempotent while already active)."""
         if self.__boot is not None:
@@ -373,15 +454,14 @@ class AppState:
         logger.info('Boot splash started (duration=%.1fs)', self.__boot.duration_s)
 
     def finish_boot_sequence(self, display: Display) -> None:
-        """Leave splash, paint normal UI, enter first app once."""
-        if self.__boot is None and self.__boot_entered:
+        """Leave splash; maybe audio setup; then enter first app once."""
+        if self.__boot is None and self.__boot_entered and self.__audio_setup is None:
             return
         self.__boot = None
-        self.update_display(display, partial=False)
-        if not self.__boot_entered and self.__apps:
-            self.__boot_entered = True
-            self.active_app.on_app_enter()
-            logger.info('Boot splash finished → %s', self.active_app.title)
+        if self.__needs_audio_setup():
+            self.begin_audio_setup(display)
+            return
+        self.__enter_main_ui(display)
 
     def arm_boot_scheduler(self, display: Display, interval_ms: int = 80) -> None:
         """Schedule splash redraws on Tk (call_later) until done."""
@@ -398,7 +478,6 @@ class AppState:
             else:
                 call_soon = getattr(display, 'call_soon', None)
                 if callable(call_soon):
-                    # Best-effort without delay API.
                     call_soon(tick)
 
         call_later = getattr(display, 'call_later', None)
@@ -412,12 +491,18 @@ class AppState:
     def on_key_left(self, display: Display):
         if self.__try_skip_boot(display):
             return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action(self.__audio_setup.handle_key_left(), display)
+            return
         self.__sounds.key()
         self.active_app.on_key_left()
         self.update_display(display, partial=True)
 
     def on_key_right(self, display: Display):
         if self.__try_skip_boot(display):
+            return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action(self.__audio_setup.handle_key_right(), display)
             return
         self.__sounds.key()
         self.active_app.on_key_right()
@@ -426,6 +511,8 @@ class AppState:
     def on_key_up(self, display: Display):
         if self.__try_skip_boot(display):
             return
+        if self.__audio_setup is not None:
+            return
         self.__sounds.key()
         self.active_app.on_key_up()
         self.update_display(display, partial=True)
@@ -433,12 +520,17 @@ class AppState:
     def on_key_down(self, display: Display):
         if self.__try_skip_boot(display):
             return
+        if self.__audio_setup is not None:
+            return
         self.__sounds.key()
         self.active_app.on_key_down()
         self.update_display(display, partial=True)
 
     def on_key_a(self, display: Display):
         if self.__try_skip_boot(display):
+            return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action(self.__audio_setup.handle_key_a(), display)
             return
         self.active_app.on_key_a()
         if self.active_app.emits_tap_sound:
@@ -448,6 +540,9 @@ class AppState:
     def on_key_b(self, display: Display):
         if self.__try_skip_boot(display):
             return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action(self.__audio_setup.handle_key_b(), display)
+            return
         self.active_app.on_key_b()
         if self.active_app.emits_tap_sound:
             self.__sounds.back()
@@ -455,6 +550,9 @@ class AppState:
 
     def on_rotary_increase(self, display: Display):
         if self.__try_skip_boot(display):
+            return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action('next', display)
             return
         self.active_app.on_app_leave()
         self.next_app()
@@ -464,6 +562,9 @@ class AppState:
 
     def on_rotary_decrease(self, display: Display):
         if self.__try_skip_boot(display):
+            return
+        if self.__audio_setup is not None:
+            self.__handle_audio_setup_action('next', display)
             return
         self.active_app.on_app_leave()
         self.previous_app()

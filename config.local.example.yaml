@@ -1,24 +1,10 @@
 # Local overrides (not committed). Copy to config.local.yaml:
 #   cp config.local.example.yaml config.local.yaml
 #
+# Prefer in-app СЕРВ / first-run wizard — this file is written automatically.
 # config.ini is logging-only — do not put audio settings there.
-# config.example.yaml is documentation only and is never loaded at runtime.
-#
-# Runtime load order:
-#   1) config.yaml
-#   2) config.local.yaml (this file)
-#   3) PIBOY_UI_SOUND_DEVICE_INDEX / PIBOY_UI_SOUND_DEVICE_NAME
 
-# Shorthand (enough for UTM ALSA hw:0,0 → PortAudio index 0):
+# Shorthand (UTM ALSA hw:0,0 → PortAudio index 0):
 output_device_index: 0
+audio_setup_done: true
 # output_device_name: "HDA Intel"
-
-# Or full form:
-# audio: !AudioConfig
-#   ui_sounds: !UiSoundsConfig
-#     enabled: true
-#     volume: 0.35
-#     clicks_during_call: false
-#     min_interval_ms: 30
-#     output_device_index: 0
-#     output_device_name: null

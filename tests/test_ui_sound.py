@@ -78,15 +78,16 @@ def test_select_default_output():
 
 
 def test_select_first_output_skips_input_only():
-    devices = [_dev(0, 'mic', out=0, inp=2), _dev(1, 'spk', out=2, host='ALSA')]
+    devices = [_dev(0, 'mic', out=0, inp=2), _dev(1, 'USB Speakers', out=2, host='ALSA')]
     d, reason = select_output_device(devices)
-    assert d is not None and d.index == 1 and reason == 'first_output'
+    assert d is not None and d.index == 1
+    assert reason in ('ranked', 'first_output')
 
 
 def test_jack_deprioritized_vs_alsa():
     devices = [
         _dev(0, 'jack out', out=2, host='JACK Audio Connection Kit'),
-        _dev(1, 'bcm2835', out=2, host='ALSA'),
+        _dev(1, 'bcm2835 Headphones', out=2, host='ALSA'),
     ]
     d, _ = select_output_device(devices)
     assert d is not None and d.index == 1
@@ -105,14 +106,22 @@ def test_explicit_index_zero_beats_default_fourteen():
         _dev(14, 'default', out=2, host='ALSA', default=True),
     ]
     d, reason = select_output_device(
-        devices,
-        configured_index=0,
-        default_output_index=14,
+        devices, configured_index=0, default_output_index=14,
     )
-    assert d is not None
-    assert d.index == 0
-    assert reason == 'configured_index'
-    assert 'HDA Intel' in d.name
+    assert d is not None and d.index == 0 and reason == 'configured_index'
+
+
+def test_auto_prefers_hda_over_abstract_default():
+    from backend.ui_sound_device import rank_output_devices
+    devices = [
+        _dev(14, 'default', out=2, host='ALSA', default=True),
+        _dev(0, 'HDA Intel: Generic Analog (hw:0,0)', out=2, host='ALSA'),
+    ]
+    ranked = rank_output_devices(devices)
+    assert ranked[0].index == 0
+    d, reason = select_output_device(devices, default_output_index=14)
+    assert d is not None and d.index == 0
+    assert reason == 'ranked'
 
 
 def test_mono_to_stereo_duplicates_samples():

@@ -63,7 +63,8 @@ audio: !AudioConfig
     clicks_during_call: false
     min_interval_ms: 30
     boot_splash: true
+    # audio_setup_done: false
   # output_device_index: 0
   # output_device_name: "plughw"
-  # Prefer config.local.yaml or PIBOY_UI_SOUND_DEVICE_INDEX for machine-local devices.
+  # Prefer in-app СЕРВ picker / first-run wizard; YAML/env for UTM debug.
   # config.example.yaml is NOT loaded at runtime — see docs/UI_SOUNDS.md.
