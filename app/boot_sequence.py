@@ -9,24 +9,40 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.ui_kit import fit_text
 
-# Matches resources/sounds/boot.wav (~7.2 s).
-BOOT_DURATION_S = 7.2
+# One second between each POST line; hold fully drawn screen before leaving splash.
+BOOT_LINE_INTERVAL_S = 1.0
+BOOT_HOLD_AFTER_S = 4.0
 BOOT_SKIP_AFTER_S = 1.5
 
-# (appear_at_seconds, line text) — timed to POST beep → floppy seek/read.
-DEFAULT_BOOT_LINES: tuple[tuple[float, str], ...] = (
-    (0.00, 'УБЕЖИЩЕ-ТЕРМИНАЛ v1.0'),
-    (0.15, 'Copyright (C) Vault-Tec Industries'),
-    (0.35, ''),
-    (0.40, 'POST ................ OK'),
-    (1.00, 'ПАМЯТЬ ............. 65536 KB OK'),
-    (1.55, 'ДИСКОВОД A: ........ SEEK'),
-    (2.40, 'ДИСКОВОД A: ........ READ OK'),
-    (3.60, 'ДИСКОВОД B: ........ SEEK'),
-    (4.50, 'ДИСКОВОД B: ........ READ OK'),
-    (5.80, 'ЗАГРУЗКА ЯДРА ......'),
-    (6.50, 'СИСТЕМА УБЕЖИЩА .... ГОТОВА'),
-    (7.00, 'НАЖМИТЕ ДЛЯ ВХОДА ИЛИ ОЖИДАЙТЕ...'),
+# Line texts in order (timing is derived: 0, 1, 2, … seconds).
+_BOOT_LINE_TEXTS: tuple[str, ...] = (
+    'УБЕЖИЩЕ-ТЕРМИНАЛ v1.0',
+    'Copyright (C) Vault-Tec Industries',
+    '',
+    'POST ................ OK',
+    'ПАМЯТЬ ............. 65536 KB OK',
+    'ДИСКОВОД A: ........ SEEK',
+    'ДИСКОВОД A: ........ READ OK',
+    'ДИСКОВОД B: ........ SEEK',
+    'ДИСКОВОД B: ........ READ OK',
+    'ЗАГРУЗКА ЯДРА ......',
+    'СИСТЕМА УБЕЖИЩА .... ГОТОВА',
+    'НАЖМИТЕ ДЛЯ ВХОДА ИЛИ ОЖИДАЙТЕ...',
+)
+
+
+def _spaced_lines(
+    texts: Sequence[str] = _BOOT_LINE_TEXTS,
+    interval_s: float = BOOT_LINE_INTERVAL_S,
+) -> tuple[tuple[float, str], ...]:
+    return tuple((i * interval_s, text) for i, text in enumerate(texts))
+
+
+DEFAULT_BOOT_LINES: tuple[tuple[float, str], ...] = _spaced_lines()
+
+# Last line at (n-1)*interval, then hold BOOT_HOLD_AFTER_S before is_done.
+BOOT_DURATION_S = (
+    max(0, len(_BOOT_LINE_TEXTS) - 1) * BOOT_LINE_INTERVAL_S + BOOT_HOLD_AFTER_S
 )
 
 
@@ -37,11 +53,17 @@ class BootSequence:
         self,
         *,
         lines: Sequence[tuple[float, str]] | None = None,
-        duration_s: float = BOOT_DURATION_S,
+        duration_s: float | None = None,
         skip_after_s: float = BOOT_SKIP_AFTER_S,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.__lines = tuple(lines) if lines is not None else DEFAULT_BOOT_LINES
+        if duration_s is None:
+            if self.__lines:
+                last_t = max(t for t, _ in self.__lines)
+                duration_s = last_t + BOOT_HOLD_AFTER_S
+            else:
+                duration_s = BOOT_HOLD_AFTER_S
         self.__duration_s = max(0.1, float(duration_s))
         self.__skip_after_s = max(0.0, float(skip_after_s))
         self.__clock = clock

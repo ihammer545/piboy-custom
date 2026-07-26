@@ -23,14 +23,35 @@ class _Clock:
 
 def test_boot_lines_reveal_over_time():
     clock = _Clock(0.0)
-    boot = BootSequence(clock=clock, duration_s=7.2, skip_after_s=1.5)
+    boot = BootSequence(clock=clock, skip_after_s=1.5)
     assert boot.visible_lines()[0].startswith('УБЕЖИЩЕ')
-    clock.t = 0.5
-    assert any('POST' in line for line in boot.visible_lines())
+    # 1 s between lines: POST is the 4th entry → appears at t=3
     clock.t = 2.5
+    assert not any('POST' in line for line in boot.visible_lines())
+    clock.t = 3.0
+    assert any('POST' in line for line in boot.visible_lines())
+    # ДИСКОВОД A READ OK is the 7th entry → t=6
+    clock.t = 6.0
     assert any('ДИСКОВОД A' in line and 'OK' in line for line in boot.visible_lines())
     assert not boot.is_done()
+    # Last line at t=11, then 4 s hold → done at 15
+    clock.t = BOOT_DURATION_S - 0.1
+    assert not boot.is_done()
     clock.t = BOOT_DURATION_S
+    assert boot.is_done()
+
+
+def test_boot_holds_four_seconds_after_last_line():
+    clock = _Clock(0.0)
+    boot = BootSequence(clock=clock)
+    last_appear = max(t for t, _ in boot._BootSequence__lines)  # noqa: SLF001
+    assert last_appear == 11.0
+    clock.t = last_appear
+    assert len(boot.visible_lines()) == 12
+    assert not boot.is_done()
+    clock.t = last_appear + 3.9
+    assert not boot.is_done()
+    clock.t = last_appear + 4.0
     assert boot.is_done()
 
 
@@ -46,7 +67,7 @@ def test_boot_skip_only_after_min_time():
 
 
 def test_boot_render_fills_frame():
-    clock = _Clock(1.2)
+    clock = _Clock(3.0)  # enough for several lines with 1 s spacing
     boot = BootSequence(clock=clock)
     img = Image.new('RGB', (800, 480), (0, 0, 0))
     cfg = AppConfig()
