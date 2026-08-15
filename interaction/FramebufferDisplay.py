@@ -29,42 +29,100 @@ except ImportError:  # pragma: no cover
     _HAS_NUMPY = False
 
 
-def suppress_fb_console() -> int | None:
+def _hide_tty_cursor() -> None:
+    """ANSI / DEC hide-cursor on common console devices (best-effort)."""
+    payload = b'\033[?25l\033[?1c'  # hide + soft cursor shape
+    for tty in ('/dev/tty1', '/dev/tty0', '/dev/console'):
+        try:
+            fd = os.open(tty, os.O_WRONLY | os.O_NOCTTY)
+            try:
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
+        except OSError:
+            continue
+
+
+def _unbind_fb_consoles() -> list[Path]:
+    """
+    Detach Linux fbcon from the framebuffer so it stops painting over us.
+
+    Needs write access to /sys/class/vtconsole/*/bind (usually root).
+    Returns paths we unbound so restore can re-bind.
+    """
+    unbound: list[Path] = []
+    root = Path('/sys/class/vtconsole')
+    if not root.is_dir():
+        return unbound
+    for vt in sorted(root.glob('vtcon*')):
+        name_path = vt / 'name'
+        bind_path = vt / 'bind'
+        try:
+            name = name_path.read_text().strip().lower()
+        except OSError:
+            continue
+        if 'frame buffer' not in name and 'framebuffer' not in name:
+            continue
+        try:
+            if bind_path.read_text().strip() == '1':
+                bind_path.write_text('0')
+                unbound.append(bind_path)
+                logger.info('Unbound framebuffer console %s (%s)', vt.name, name)
+        except OSError as exc:
+            logger.warning('Cannot unbind %s (need root?): %s', bind_path, exc)
+    return unbound
+
+
+def suppress_fb_console() -> tuple[int | None, list[Path]]:
     """
     Hide Linux console cursor / stop fbcon painting on the framebuffer.
 
-    Returns the tty fd kept open in graphics mode, or None if unavailable.
-    Caller should pass it to restore_fb_console() on shutdown.
+    Returns (tty_fd_in_graphics_mode_or_None, unbound_vt_bind_paths).
     """
     blink = Path('/sys/class/graphics/fbcon/cursor_blink')
     try:
         blink.write_text('0')
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug('cursor_blink: %s', exc)
 
+    _hide_tty_cursor()
+    unbound = _unbind_fb_consoles()
+
+    tty_fd: int | None = None
     for tty in ('/dev/tty0', '/dev/tty1', '/dev/console'):
         try:
             fd = os.open(tty, os.O_RDWR)
             fcntl.ioctl(fd, _KDSETMODE, _KD_GRAPHICS)
             logger.info('Framebuffer console suppressed via %s (KD_GRAPHICS)', tty)
-            return fd
+            tty_fd = fd
+            break
         except OSError:
             continue
-    logger.warning('Could not switch VT to KD_GRAPHICS (cursor may still blink)')
-    return None
+    if tty_fd is None and not unbound:
+        logger.warning(
+            'Could not suppress fbcon (permission?). Run once as root: '
+            'echo 0 > /sys/class/graphics/fbcon/cursor_blink; '
+            'for d in /sys/class/vtconsole/vtcon*; do '
+            'grep -qi "frame buffer" "$d/name" && echo 0 > "$d/bind"; done'
+        )
+    return tty_fd, unbound
 
 
-def restore_fb_console(tty_fd: int | None) -> None:
-    if tty_fd is None:
-        return
-    try:
-        fcntl.ioctl(tty_fd, _KDSETMODE, _KD_TEXT)
-    except OSError:
-        pass
-    try:
-        os.close(tty_fd)
-    except OSError:
-        pass
+def restore_fb_console(tty_fd: int | None, unbound: list[Path] | None = None) -> None:
+    if tty_fd is not None:
+        try:
+            fcntl.ioctl(tty_fd, _KDSETMODE, _KD_TEXT)
+        except OSError:
+            pass
+        try:
+            os.close(tty_fd)
+        except OSError:
+            pass
+    for bind_path in unbound or ():
+        try:
+            bind_path.write_text('1')
+        except OSError:
+            pass
 
 
 def rgb_image_to_rgb565(image: Image.Image) -> bytes:
@@ -125,7 +183,7 @@ class FramebufferDisplay(Display):
                 'Framebuffer %s is %sx%s but app is %sx%s — using app size',
                 device, fb_w, fb_h, self.__width, self.__height,
             )
-        self.__console_tty_fd = suppress_fb_console()
+        self.__console_tty_fd, self.__unbound_vt = suppress_fb_console()
         self.__fd = os.open(device, os.O_RDWR)
         size = self.__line_length * self.__height
         self.__mm = mmap.mmap(self.__fd, size, mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
@@ -162,8 +220,9 @@ class FramebufferDisplay(Display):
                 os.close(self.__fd)
             except Exception:  # noqa: BLE001
                 pass
-            restore_fb_console(self.__console_tty_fd)
+            restore_fb_console(self.__console_tty_fd, self.__unbound_vt)
             self.__console_tty_fd = None
+            self.__unbound_vt = []
 
     def reset(self):
         with self.__lock:
