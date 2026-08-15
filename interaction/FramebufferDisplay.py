@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import mmap
 import os
@@ -15,12 +16,55 @@ from interaction.Display import Display
 
 logger = logging.getLogger('piboy.fb')
 
+# linux/kd.h — stop fbcon from drawing over our frames (blinking underscore)
+_KDSETMODE = 0x4B3A
+_KD_TEXT = 0
+_KD_GRAPHICS = 1
+
 try:
     import numpy as np
     _HAS_NUMPY = True
 except ImportError:  # pragma: no cover
     np = None  # type: ignore
     _HAS_NUMPY = False
+
+
+def suppress_fb_console() -> int | None:
+    """
+    Hide Linux console cursor / stop fbcon painting on the framebuffer.
+
+    Returns the tty fd kept open in graphics mode, or None if unavailable.
+    Caller should pass it to restore_fb_console() on shutdown.
+    """
+    blink = Path('/sys/class/graphics/fbcon/cursor_blink')
+    try:
+        blink.write_text('0')
+    except OSError:
+        pass
+
+    for tty in ('/dev/tty0', '/dev/tty1', '/dev/console'):
+        try:
+            fd = os.open(tty, os.O_RDWR)
+            fcntl.ioctl(fd, _KDSETMODE, _KD_GRAPHICS)
+            logger.info('Framebuffer console suppressed via %s (KD_GRAPHICS)', tty)
+            return fd
+        except OSError:
+            continue
+    logger.warning('Could not switch VT to KD_GRAPHICS (cursor may still blink)')
+    return None
+
+
+def restore_fb_console(tty_fd: int | None) -> None:
+    if tty_fd is None:
+        return
+    try:
+        fcntl.ioctl(tty_fd, _KDSETMODE, _KD_TEXT)
+    except OSError:
+        pass
+    try:
+        os.close(tty_fd)
+    except OSError:
+        pass
 
 
 def rgb_image_to_rgb565(image: Image.Image) -> bytes:
@@ -81,6 +125,7 @@ class FramebufferDisplay(Display):
                 'Framebuffer %s is %sx%s but app is %sx%s — using app size',
                 device, fb_w, fb_h, self.__width, self.__height,
             )
+        self.__console_tty_fd = suppress_fb_console()
         self.__fd = os.open(device, os.O_RDWR)
         size = self.__line_length * self.__height
         self.__mm = mmap.mmap(self.__fd, size, mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
@@ -117,6 +162,8 @@ class FramebufferDisplay(Display):
                 os.close(self.__fd)
             except Exception:  # noqa: BLE001
                 pass
+            restore_fb_console(self.__console_tty_fd)
+            self.__console_tty_fd = None
 
     def reset(self):
         with self.__lock:
