@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 from datetime import datetime
 from logging.config import fileConfig
@@ -729,13 +730,38 @@ class AppModule(Module):
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
             return self.__unified_instance
         if e.backend_mode == BackendMode.RASPBERRY:
-            from interaction.ILI9486Display import ILI9486Display
-            spi_device_config = e.display_config.display_device
-            return ILI9486Display((spi_device_config.bus, spi_device_config.device),
-                                  e.display_config.dc_pin, e.display_config.rst_pin, e.display_config.flip_display)
+            return self.__create_raspberry_display(e)
         if self.__unified_instance is None:
             self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
         return self.__unified_instance
+
+    @staticmethod
+    def __create_raspberry_display(e: Environment) -> Display:
+        from interaction.FramebufferDisplay import FramebufferDisplay, read_fb_size
+        from interaction.ILI9486Display import ILI9486Display
+
+        driver = (e.display_config.driver or 'auto').strip().lower()
+        fb_dev = e.display_config.framebuffer_device or '/dev/fb0'
+        app_w, app_h = e.app_config.width, e.app_config.height
+
+        def use_fb() -> bool:
+            if not os.path.exists(fb_dev):
+                return False
+            fb_w, fb_h = read_fb_size(fb_dev)
+            return fb_w == app_w and fb_h == app_h
+
+        if driver == 'framebuffer' or (driver == 'auto' and use_fb()):
+            logger.info('Using FramebufferDisplay %s (%sx%s)', fb_dev, app_w, app_h)
+            return FramebufferDisplay(fb_dev, width=app_w, height=app_h)
+
+        logger.info('Using ILI9486Display (SPI)')
+        spi_device_config = e.display_config.display_device
+        return ILI9486Display(
+            (spi_device_config.bus, spi_device_config.device),
+            e.display_config.dc_pin,
+            e.display_config.rst_pin,
+            e.display_config.flip_display,
+        )
 
     @singleton
     @provider
@@ -746,10 +772,13 @@ class AppModule(Module):
             return self.__unified_instance
         if e.backend_mode == BackendMode.RASPBERRY:
             from interaction.GPIOInput import GPIOInput
+            from interaction.FramebufferDisplay import FramebufferDisplay
             from interaction.ILI9486Display import ILI9486Display
 
             def reset_and_init():
                 if isinstance(display, ILI9486Display):
+                    display.reset()
+                elif isinstance(display, FramebufferDisplay):
                     display.reset()
                 display.show(state.clear_buffer(), 0, 0)
 

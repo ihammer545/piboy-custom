@@ -275,6 +275,9 @@ class DisplayConfig:
     cs_pin: int = 7
     irq_pin: int = 17
     touch_device: SPIConfig = field(default_factory=lambda: SPIConfig(0, 1))
+    # auto | framebuffer | ili9486 — auto prefers /dev/fb0 when size matches app
+    driver: str = 'auto'
+    framebuffer_device: str = '/dev/fb0'
 
 
 @dataclass

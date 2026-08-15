@@ -1,6 +1,12 @@
 !Environment
 backend: simulator
 dev_mode: true
+# On Raspberry Pi with 5\" 800×480 framebuffer:
+# backend: raspberry
+# dev_mode: false
+# display_config: !DisplayConfig
+#   driver: auto   # or framebuffer | ili9486
+#   framebuffer_device: /dev/fb0
 app_config: !AppConfig
   width: 800
   height: 480
