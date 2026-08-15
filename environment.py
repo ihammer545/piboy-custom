@@ -110,7 +110,7 @@ class TouchDeviceConfig:
     invert_x: bool = False
     invert_y: bool = False
     rotation: int = 0
-    debounce_ms: int = 120
+    debounce_ms: int = 40
     enabled: bool = True
 
 

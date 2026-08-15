@@ -1,0 +1,18 @@
+[Unit]
+Description=Shelter Terminal (PiBoy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ihammer
+Group=ihammer
+WorkingDirectory=/home/ihammer/piboy
+# + = run as root (unbind fbcon); required to kill the blinking console cursor
+ExecStartPre=+/home/ihammer/piboy/scripts/hide-fb-cursor.sh
+ExecStart=/home/ihammer/piboy/.venv/bin/python -u /home/ihammer/piboy/piboy.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

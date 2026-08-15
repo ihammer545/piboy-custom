@@ -302,11 +302,13 @@ class AppState:
         if self.__audio_setup is not None:
             self.update_display(display, partial=False)
             return
+        # Full CRT recompose every second makes touch feel ~1s late on Pi framebuffer.
+        # With CRT on, refresh chrome only when UI actually changes (tap/key).
         if self.__crt.enabled:
-            self.update_display(display, partial=False)
-        else:
-            image, x0, y0 = draw_footer(self.image_buffer, self)
-            display.show(image, x0, y0)
+            self.__tick()
+            return
+        image, x0, y0 = draw_footer(self.image_buffer, self)
+        display.show(image, x0, y0)
         self.__tick()
 
     def compose_frame(self) -> Image.Image:
@@ -348,29 +350,37 @@ class AppState:
         Concurrent callers coalesce via RenderGate — no parallel CRT passes.
         """
         def _render():
-            overlay = self.__boot is not None or self.__audio_setup is not None
-            if overlay or self.__crt.enabled:
-                frame = self.compose_frame()
-                if self.__crt.enabled:
-                    frame = self.__crt.process(frame, ui_changed=True)
-                display.show(frame, 0, 0)
-                return
+            begin = getattr(display, 'begin_update', None)
+            end = getattr(display, 'end_update', None)
+            if callable(begin):
+                begin()
+            try:
+                overlay = self.__boot is not None or self.__audio_setup is not None
+                if overlay or self.__crt.enabled:
+                    frame = self.compose_frame()
+                    if self.__crt.enabled:
+                        frame = self.__crt.process(frame, ui_changed=True)
+                    display.show(frame, 0, 0)
+                    return
 
-            image = self.clear_buffer()
-            app_bbox = (self.__environment.app_config.app_side_offset,
-                        self.__environment.app_config.app_top_offset,
-                        self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
-                        self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
-            x_offset, y_offset = app_bbox[0:2]
-            if partial:
-                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                    display.show(patch, x0 + x_offset, y0 + y_offset)
-            else:
-                for patch, x0, y0 in draw_base(image, self):
-                    display.show(patch, x0, y0)
-                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                    image.paste(patch, (x0 + x_offset, y0 + y_offset))
-                display.show(image.crop(app_bbox), x_offset, y_offset)
+                image = self.clear_buffer()
+                app_bbox = (self.__environment.app_config.app_side_offset,
+                            self.__environment.app_config.app_top_offset,
+                            self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+                            self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
+                x_offset, y_offset = app_bbox[0:2]
+                if partial:
+                    for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                        display.show(patch, x0 + x_offset, y0 + y_offset)
+                else:
+                    for patch, x0, y0 in draw_base(image, self):
+                        display.show(patch, x0, y0)
+                    for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                        image.paste(patch, (x0 + x_offset, y0 + y_offset))
+                    display.show(image.crop(app_bbox), x_offset, y_offset)
+            finally:
+                if callable(end):
+                    end()
 
         call_soon = getattr(display, 'call_soon', None)
         is_main = getattr(display, 'is_main_thread', None)
@@ -771,9 +781,15 @@ class AppModule(Module):
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
             return self.__unified_instance
         if e.backend_mode == BackendMode.RASPBERRY:
-            from interaction.GPIOInput import GPIOInput
             from interaction.FramebufferDisplay import FramebufferDisplay
             from interaction.ILI9486Display import ILI9486Display
+            from interaction.NullInput import NullInput
+
+            if not e.input.keyboard_enabled:
+                logger.info('GPIO keypad skipped (input.mode=%s)', e.input.mode)
+                return NullInput()
+
+            from interaction.GPIOInput import GPIOInput
 
             def reset_and_init():
                 if isinstance(display, ILI9486Display):
@@ -782,15 +798,20 @@ class AppModule(Module):
                     display.reset()
                 display.show(state.clear_buffer(), 0, 0)
 
-            return GPIOInput(e.keypad_config.left_pin, e.keypad_config.right_pin,
-                             e.keypad_config.up_pin, e.keypad_config.down_pin,
-                             e.keypad_config.a_pin, e.keypad_config.b_pin,
-                             e.rotary_config.rotary_device, e.rotary_config.sw_pin,
-                             lambda: state.on_key_left(display), lambda: state.on_key_right(display),
-                             lambda: state.on_key_up(display), lambda: state.on_key_down(display),
-                             lambda: state.on_key_a(display), lambda: state.on_key_b(display),
-                             lambda: state.on_rotary_increase(display), lambda: state.on_rotary_decrease(display),
-                             reset_and_init)
+            try:
+                return GPIOInput(e.keypad_config.left_pin, e.keypad_config.right_pin,
+                                 e.keypad_config.up_pin, e.keypad_config.down_pin,
+                                 e.keypad_config.a_pin, e.keypad_config.b_pin,
+                                 e.rotary_config.rotary_device, e.rotary_config.sw_pin,
+                                 lambda: state.on_key_left(display), lambda: state.on_key_right(display),
+                                 lambda: state.on_key_up(display), lambda: state.on_key_down(display),
+                                 lambda: state.on_key_a(display), lambda: state.on_key_b(display),
+                                 lambda: state.on_rotary_increase(display),
+                                 lambda: state.on_rotary_decrease(display),
+                                 reset_and_init)
+            except Exception as exc:  # noqa: BLE001 — missing keypad / GPIO busy / no rotary
+                logger.warning('GPIOInput unavailable (%s); continuing without keypad', exc)
+                return NullInput()
         if self.__unified_instance is None:
             self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
         return self.__unified_instance

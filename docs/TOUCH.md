@@ -15,7 +15,7 @@ input: !InputConfig
     invert_x: false
     invert_y: false
     rotation: 0          # 0 | 90 | 180 | 270
-    debounce_ms: 120
+    debounce_ms: 40
     enabled: true
 ```
 

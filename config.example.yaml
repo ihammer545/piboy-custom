@@ -35,7 +35,9 @@ simulator: !SimulatorConfig
   event_log_limit: 80
   connect_delay_s: 0.8
 input: !InputConfig
-  mode: touch_keyboard
+  # touch — экран без GPIO-кнопок (типичный 5\" киоск)
+  # touch_keyboard — touch + GPIO keypad/rotary
+  mode: touch
   touch: !TouchDeviceConfig
     device: /dev/input/event0
     width: 800
@@ -44,10 +46,12 @@ input: !InputConfig
     invert_x: false
     invert_y: false
     rotation: 0
-    debounce_ms: 120
+    debounce_ms: 40
     enabled: true
 crt: !CrtConfig
-  preset: subtle
+  # На Raspberry Pi / framebuffer лучше off — subtle даёт ~0.5–1s задержку на тап.
+  preset: off
+  # preset: subtle
   # Optional overrides (null = use preset defaults):
   # enabled: true
   # phosphor_floor: 0.018
@@ -63,7 +67,7 @@ crt: !CrtConfig
   # grain_fps: 5
   grain_seed: 42
 audio: !AudioConfig
-    ui_sounds: !UiSoundsConfig
+  ui_sounds: !UiSoundsConfig
     enabled: true
     volume: 0.35
     clicks_during_call: false

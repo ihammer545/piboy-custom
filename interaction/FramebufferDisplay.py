@@ -189,25 +189,81 @@ class FramebufferDisplay(Display):
         self.__mm = mmap.mmap(self.__fd, size, mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
         self.__lock = threading.Lock()
         self.__canvas = Image.new('RGB', (self.__width, self.__height), (0, 0, 0))
+        self.__defer_flush = 0
+        self.__dirty: tuple[int, int, int, int] | None = None  # x0,y0,x1,y1 inclusive-exclusive
         logger.info('FramebufferDisplay %s %sx%s rgb565', device, self.__width, self.__height)
 
     @property
     def size(self) -> tuple[int, int]:
         return self.__width, self.__height
 
-    def __flush(self) -> None:
+    def begin_update(self) -> None:
+        """Batch multiple show() calls into one framebuffer write."""
+        with self.__lock:
+            self.__defer_flush += 1
+
+    def end_update(self) -> None:
+        with self.__lock:
+            if self.__defer_flush > 0:
+                self.__defer_flush -= 1
+            if self.__defer_flush == 0:
+                self.__flush_dirty()
+
+    def __mark_dirty(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        x0 = max(0, min(self.__width, int(x0)))
+        y0 = max(0, min(self.__height, int(y0)))
+        x1 = max(0, min(self.__width, int(x1)))
+        y1 = max(0, min(self.__height, int(y1)))
+        if x1 <= x0 or y1 <= y0:
+            return
+        if self.__dirty is None:
+            self.__dirty = (x0, y0, x1, y1)
+            return
+        dx0, dy0, dx1, dy1 = self.__dirty
+        self.__dirty = (min(dx0, x0), min(dy0, y0), max(dx1, x1), max(dy1, y1))
+
+    def __flush_full(self) -> None:
         data = rgb_image_to_rgb565(self.__canvas)
         self.__mm.seek(0)
         self.__mm.write(data)
+        self.__dirty = None
+
+    def __flush_region(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        w = x1 - x0
+        h = y1 - y0
+        if w <= 0 or h <= 0:
+            return
+        if x0 == 0 and y0 == 0 and x1 == self.__width and y1 == self.__height:
+            self.__flush_full()
+            return
+        crop = self.__canvas.crop((x0, y0, x1, y1))
+        data = rgb_image_to_rgb565(crop)
+        row_bytes = w * self.__bpp
+        for row in range(h):
+            offset = (y0 + row) * self.__line_length + x0 * self.__bpp
+            start = row * row_bytes
+            self.__mm.seek(offset)
+            self.__mm.write(data[start:start + row_bytes])
+
+    def __flush_dirty(self) -> None:
+        if self.__dirty is None:
+            return
+        x0, y0, x1, y1 = self.__dirty
+        self.__flush_region(x0, y0, x1, y1)
+        self.__dirty = None
 
     @override
     def show(self, image: Image.Image, x0: int, y0: int):
         with self.__lock:
             if image.size == (self.__width, self.__height) and x0 == 0 and y0 == 0:
                 self.__canvas = image.convert('RGB')
+                self.__mark_dirty(0, 0, self.__width, self.__height)
             else:
-                self.__canvas.paste(image.convert('RGB'), (int(x0), int(y0)))
-            self.__flush()
+                rgb = image.convert('RGB')
+                self.__canvas.paste(rgb, (int(x0), int(y0)))
+                self.__mark_dirty(int(x0), int(y0), int(x0) + rgb.size[0], int(y0) + rgb.size[1])
+            if self.__defer_flush == 0:
+                self.__flush_dirty()
 
     @override
     def close(self):
@@ -227,4 +283,6 @@ class FramebufferDisplay(Display):
     def reset(self):
         with self.__lock:
             self.__canvas = Image.new('RGB', (self.__width, self.__height), (0, 0, 0))
-            self.__flush()
+            self.__dirty = (0, 0, self.__width, self.__height)
+            if self.__defer_flush == 0:
+                self.__flush_dirty()
