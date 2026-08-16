@@ -1042,6 +1042,13 @@ if __name__ == '__main__':
     DISPLAY.show(app_state.image_buffer, 0, 0)
     run_boot_then_enter(app_state, DISPLAY)
 
+    import signal
+
+    def _request_shutdown(signum, frame):  # noqa: ARG001
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _request_shutdown)
+
     try:
         app_state.watch_function(DISPLAY)
     except KeyboardInterrupt:

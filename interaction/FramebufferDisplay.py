@@ -302,6 +302,13 @@ class FramebufferDisplay(Display):
     def close(self):
         with self.__lock:
             try:
+                # Black out panel so the last UI frame does not remain after exit.
+                self.__canvas = Image.new('RGB', (self.__width, self.__height), (0, 0, 0))
+                self.__dirty = (0, 0, self.__width, self.__height)
+                self.__flush_dirty()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 self.__mm.close()
             except Exception:  # noqa: BLE001
                 pass

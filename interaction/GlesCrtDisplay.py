@@ -340,6 +340,15 @@ class GlesCrtDisplay(Display):
     def __teardown_gl(self) -> None:
         pygame = self.__pygame
         GL = self.__gl
+        # Leave a black screen so the last UI frame does not freeze on the panel.
+        try:
+            if GL is not None and pygame is not None:
+                GL.glViewport(0, 0, self.__width, self.__height)
+                GL.glClearColor(0.0, 0.0, 0.0, 1.0)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                pygame.display.flip()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             if GL is not None and self.__tex is not None:
                 GL.glDeleteTextures(1, [self.__tex])
