@@ -940,26 +940,26 @@ def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
 
     font = state.environment.app_config.font_tab
     max_text_width = width - (2 * header_side_offset)
+    # Ink boxes (FreeType getbbox can have negative top — do not treat bottom as height).
     tab_boxes = [tuple(map(int, font.getbbox(app.title))) for app in state.apps]
-    app_text_width = sum(right - left for left, _top, right, _bottom in tab_boxes) + (
-        len(state.apps) - 1
-    ) * app_spacing
+    widths = [right - left for left, _top, right, _bottom in tab_boxes]
+    heights = [bottom - top for _left, top, _right, bottom in tab_boxes]
+    app_text_width = sum(widths) + (len(state.apps) - 1) * app_spacing
     cursor = header_side_offset + max(0, (max_text_width - app_text_width) // 2)
-    # getbbox is relative to baseline (top usually < 0). Old code used `bottom` as
-    # height per label, so ДОСТ/СРЕД sat higher and clipped under the header crop.
-    max_bottom = max((bottom for _l, _t, _r, bottom in tab_boxes), default=0)
-    max_ascent = max((-top for _l, top, _r, _b in tab_boxes), default=0)
-    baseline_y = header_top_offset - app_padding - max_bottom
-    baseline_y = max(baseline_y, max_ascent)
+    tab_band = max(1, header_top_offset)
+    max_h = max(heights) if heights else 0
+    text_top = max(2, (tab_band - max_h) // 2)
+    if text_top + max_h > tab_band:
+        text_top = max(0, tab_band - max_h)
     tab_hits: list[HitTarget] = []
     for index, app in enumerate(state.apps):
-        left, _top, right, _bottom = tab_boxes[index]
+        left, top, right, bottom = tab_boxes[index]
         text_width = right - left
-        draw.text((cursor, baseline_y), app.title, color_accent, font=font, anchor='ls')
+        # anchor=lt: (x, y) is the top-left of the ink box — stays inside the header crop.
+        draw.text((cursor, text_top), app.title, color_accent, font=font, anchor='lt')
         tab_rect = Rect(cursor - app_padding, 0,
                         cursor + text_width + app_padding,
                         header_top_offset + vertical_line)
-        # Touch-friendly targets (tabs are primary navigation)
         tab_hits.append(make_hit(tab_rect, f'tab:{index}', min_w=56, min_h=48))
         if app is state.active_app:
             start = (cursor - app_padding, header_top_offset - vertical_line)

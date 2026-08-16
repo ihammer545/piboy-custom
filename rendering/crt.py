@@ -63,8 +63,9 @@ _PRESET_VALUES: dict[str, dict[str, Any]] = {
         # Temporarily 0 — diagnose black-frame flashes vs intentional CRT flicker.
         'flicker': 0.0,
         'glow': 0.0,
-        'rounded_corners': 24,
-        'bezel_inset': 8,
+        # Keep bezel modest so top tab strip (СВЗ/ДОСТ/…) stays readable on 800×480.
+        'rounded_corners': 12,
+        'bezel_inset': 2,
         'curvature': 0.009,
         'grain_fps': 5.0,
     },

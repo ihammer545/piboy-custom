@@ -174,7 +174,7 @@ class AudioConfig:
 @dataclass
 class AppConfig:
     app_side_offset: int = 24
-    app_top_offset: int = 48
+    app_top_offset: int = 56
     app_bottom_offset: int = 36
     font_name: str = 'FreeSansBold.ttf'
     font_header_size: int = 18
