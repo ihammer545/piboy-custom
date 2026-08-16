@@ -209,6 +209,11 @@ class GlesCrtDisplay(Display):
             pygame.OPENGL | pygame.FULLSCREEN | pygame.DOUBLEBUF,
             vsync=1,
         )
+        pygame.mouse.set_visible(False)
+        try:
+            pygame.event.set_grab(True)
+        except Exception:  # noqa: BLE001
+            pass
         # Import after context exists; force EGL on Pi KMS.
         from OpenGL import GL
         self.__gl = GL

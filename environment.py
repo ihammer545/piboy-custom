@@ -76,8 +76,8 @@ class LayoutConfig:
     list_row_height: int = 40
     footer_height: int = 28
     header_vertical_line: int = 5
-    app_spacing: int = 24
-    app_padding: int = 6
+    app_spacing: int = 18
+    app_padding: int = 10
 
 
 @dataclass
@@ -174,11 +174,13 @@ class AudioConfig:
 @dataclass
 class AppConfig:
     app_side_offset: int = 24
-    app_top_offset: int = 40
+    app_top_offset: int = 48
     app_bottom_offset: int = 36
     font_name: str = 'FreeSansBold.ttf'
     font_header_size: int = 18
     font_standard_size: int = 16
+    # Top tab strip (СВЗ / ДОСТ / …) — larger for touch
+    font_tab_size: int = 24
     color_mode: int = 0
     width: int = 800
     height: int = 480
@@ -187,6 +189,7 @@ class AppConfig:
     # cached properties
     __font_header: ImageFont.FreeTypeFont | None = None
     __font_standard: ImageFont.FreeTypeFont | None = None
+    __font_tab: ImageFont.FreeTypeFont | None = None
     __resolved_font: str | None = None
 
     def __post_init__(self):
@@ -228,6 +231,12 @@ class AppConfig:
         if self.__font_header is None:
             self.__font_header = ImageFont.truetype(self.font_path, self.font_header_size)
         return self.__font_header
+
+    @property
+    def font_tab(self) -> ImageFont.FreeTypeFont:
+        if self.__font_tab is None:
+            self.__font_tab = ImageFont.truetype(self.font_path, self.font_tab_size)
+        return self.__font_tab
 
     @property
     def font_standard(self) -> ImageFont.FreeTypeFont:

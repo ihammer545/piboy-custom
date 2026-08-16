@@ -74,6 +74,8 @@ def main() -> int:
         pygame.quit()
         return 1
 
+    pygame.mouse.set_visible(False)
+
     # Import OpenGL only after SDL created an EGL context.
     try:
         from OpenGL import GL

@@ -938,7 +938,7 @@ def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     end = (width - header_side_offset - 1, header_top_offset + vertical_line)
     draw.line(start + end, fill=color_accent)
 
-    font = state.environment.app_config.font_header
+    font = state.environment.app_config.font_tab
     max_text_width = width - (2 * header_side_offset)
     app_text_width = sum(int(font.getbbox(app.title)[2]) for app in state.apps) + (len(state.apps) - 1) * app_spacing
     cursor = header_side_offset + max(0, (max_text_width - app_text_width) // 2)
@@ -950,8 +950,8 @@ def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
         tab_rect = Rect(cursor - app_padding, 0,
                         cursor + text_width + app_padding,
                         header_top_offset + vertical_line)
-        # Expand for touch comfort without overlapping neighbors too aggressively
-        tab_hits.append(make_hit(tab_rect, f'tab:{index}', min_w=44, min_h=44))
+        # Touch-friendly targets (tabs are primary navigation)
+        tab_hits.append(make_hit(tab_rect, f'tab:{index}', min_w=56, min_h=48))
         if app is state.active_app:
             start = (cursor - app_padding, header_top_offset - vertical_line)
             end = (cursor - app_padding, header_top_offset)
