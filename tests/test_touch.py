@@ -106,6 +106,34 @@ def test_tab_switch_by_touch():
     assert state.active_app.title == 'ДОСТ'
 
 
+def test_tab_labels_share_baseline():
+    """Cyrillic tab titles must not shift vertically (regression for ДОСТ/СРЕД clipping)."""
+    from PIL import Image
+
+    from piboy import draw_header
+
+    state, _ = _build_state()
+    image = Image.new('RGB', state.environment.app_config.resolution, state.environment.app_config.background)
+    header, x0, y0 = draw_header(image, state)
+    accent = state.environment.app_config.accent
+    tops: list[int] = []
+    for hit in state._AppState__tab_hits:  # noqa: SLF001
+        # Hit rects are in full-frame coords; header crop starts at (x0, y0).
+        x_start = max(0, hit.rect.x0 - x0)
+        x_end = min(header.width, hit.rect.x1 - x0)
+        top_ink = None
+        for y in range(header.height):
+            for x in range(x_start, x_end):
+                if header.getpixel((x, y))[:3] == accent[:3]:
+                    top_ink = y
+                    break
+            if top_ink is not None:
+                break
+        assert top_ink is not None, 'tab label not drawn'
+        tops.append(top_ink)
+    assert max(tops) - min(tops) <= 2
+
+
 def test_access_keypad_touch_and_no_code_in_log():
     state, injector = _build_state()
     # Switch to Access

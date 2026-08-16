@@ -940,13 +940,22 @@ def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
 
     font = state.environment.app_config.font_tab
     max_text_width = width - (2 * header_side_offset)
-    app_text_width = sum(int(font.getbbox(app.title)[2]) for app in state.apps) + (len(state.apps) - 1) * app_spacing
+    tab_boxes = [tuple(map(int, font.getbbox(app.title))) for app in state.apps]
+    app_text_width = sum(right - left for left, _top, right, _bottom in tab_boxes) + (
+        len(state.apps) - 1
+    ) * app_spacing
     cursor = header_side_offset + max(0, (max_text_width - app_text_width) // 2)
+    # getbbox is relative to baseline (top usually < 0). Old code used `bottom` as
+    # height per label, so ДОСТ/СРЕД sat higher and clipped under the header crop.
+    max_bottom = max((bottom for _l, _t, _r, bottom in tab_boxes), default=0)
+    max_ascent = max((-top for _l, top, _r, _b in tab_boxes), default=0)
+    baseline_y = header_top_offset - app_padding - max_bottom
+    baseline_y = max(baseline_y, max_ascent)
     tab_hits: list[HitTarget] = []
     for index, app in enumerate(state.apps):
-        _, _, text_width, text_height = map(int, font.getbbox(app.title))
-        text_top = header_top_offset - text_height - app_padding
-        draw.text((cursor, text_top), app.title, color_accent, font=font)
+        left, _top, right, _bottom = tab_boxes[index]
+        text_width = right - left
+        draw.text((cursor, baseline_y), app.title, color_accent, font=font, anchor='ls')
         tab_rect = Rect(cursor - app_padding, 0,
                         cursor + text_width + app_padding,
                         header_top_offset + vertical_line)
