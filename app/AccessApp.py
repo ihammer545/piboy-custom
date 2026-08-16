@@ -24,6 +24,10 @@ class AccessUiState(Enum):
 class AccessApp(SelfUpdatingApp):
     """ДОСТУП — code entry and simulated lock pulse."""
 
+    # Left digit pad (3×4). Right column: OK + Сброс only.
+    DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', '']
+    ACTIONS = ['OK', 'Сброс']
+
     @inject
     def __init__(self, draw_callback: Callable[[bool], None], access: AccessService,
                  app_config: AppConfig, sounds: UiSoundService):
@@ -36,11 +40,15 @@ class AccessApp(SelfUpdatingApp):
         self.__ui_state = AccessUiState.IDLE
         self.__message = 'Введите код'
         self.__scenario = ''
-        self.__focus = 0
-        # Digit pad + backspace + OK; clear via Сброс / Esc
-        self.__keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', 'OK']
+        # Focus index into DIGITS+ACTIONS (skip empty pad cells)
+        self.__focus_key = '1'
         self.__hits: list[HitTarget] = []
         self.__pressed_key: str | None = None
+
+    @property
+    def __keys(self) -> list[str]:
+        """Navigable keys in reading order (no empty cells)."""
+        return [k for k in self.DIGITS if k] + self.ACTIONS
 
     @property
     @override
@@ -64,6 +72,8 @@ class AccessApp(SelfUpdatingApp):
         self.__scenario = ''
 
     def __press(self, key: str, *, from_touch: bool = False):
+        if not key:
+            return
         if key in ('Сброс', 'clear'):
             self.__sounds.back()
             self.__clear_code()
@@ -79,7 +89,6 @@ class AccessApp(SelfUpdatingApp):
             self.__submit()
             return
         if key.isdigit() and len(self.__digits) < 8:
-            # On-screen pad → touch; hardware / arrows+A digit entry → key.
             if from_touch:
                 self.__sounds.touch()
             else:
@@ -91,7 +100,6 @@ class AccessApp(SelfUpdatingApp):
     def __submit(self):
         self.__ui_state = AccessUiState.CHECKING
         self.__message = 'Проверка...'
-        # Code is never logged or voiced — only outcome sounds.
         result, pulse = self.__access.submit_code(self.__digits)
         self.__digits = ''
         if result.outcome == AccessOutcome.DENIED:
@@ -105,6 +113,14 @@ class AccessApp(SelfUpdatingApp):
             self.__scenario = result.scenario
             if pulse is not None:
                 self.__sounds.lock()
+
+    def __move_focus(self, delta: int):
+        keys = self.__keys
+        if self.__focus_key not in keys:
+            self.__focus_key = keys[0]
+            return
+        i = keys.index(self.__focus_key)
+        self.__focus_key = keys[(i + delta) % len(keys)]
 
     @override
     def draw(self, image: Image.Image, partial=False) -> Generator[tuple[Image.Image, int, int], Any, None]:
@@ -137,26 +153,48 @@ class AccessApp(SelfUpdatingApp):
             y += layout.line_height
             draw.text((layout.pad, y), f'Сценарий: {self.__scenario}', fill=accent, font=font)
 
-        clear_h = layout.button_min_height
-        clear_y = height - 5 * (layout.button_min_height + layout.gap) - layout.pad
-        clear_rect = Rect(layout.pad, clear_y, width - layout.pad, clear_y + clear_h - 1)
-        draw_button(draw, clear_rect, 'Сброс', font, accent, dark,
-                    focused=False, background=bg, pressed=self.__pressed_key == 'Сброс')
-        self.__hits.append(make_hit(clear_rect, 'Сброс',
-                                    min_w=layout.button_min_width, min_h=layout.button_min_height))
+        # Keypad: taller / narrower digit cells on the left; OK + Сброс stacked on the right.
+        info_bottom = y + layout.line_height + layout.gap
+        grid_top = max(info_bottom, height // 3)
+        grid_bottom = height - layout.pad
+        gap = max(6, layout.gap - 2)
+        action_w = max(120, (width * 2) // 5)
+        pad_right = width - layout.pad
+        pad_left = layout.pad
+        digits_right = pad_right - action_w - gap
+        digits_width = digits_right - pad_left
 
-        grid_top = clear_y + clear_h + layout.gap
-        cols = 3
-        btn_w = (width - 2 * layout.pad - (cols - 1) * layout.gap) // cols
-        btn_h = layout.button_min_height
-        for i, key in enumerate(self.__keys):
+        rows, cols = 4, 3
+        btn_w = (digits_width - (cols - 1) * gap) // cols
+        # Keep digit keys narrow for one-finger taps; leave slack toward the action column.
+        btn_w = min(btn_w, 100)
+        btn_h = (grid_bottom - grid_top - (rows - 1) * gap) // rows
+        btn_h = max(btn_h, layout.button_min_height + 16)
+
+        for i, key in enumerate(self.DIGITS):
             row, col = divmod(i, cols)
-            x0 = layout.pad + col * (btn_w + layout.gap)
-            y0 = grid_top + row * (btn_h + layout.gap)
+            x0 = pad_left + col * (btn_w + gap)
+            y0 = grid_top + row * (btn_h + gap)
             box = Rect(x0, y0, x0 + btn_w - 1, y0 + btn_h - 1)
-            draw_button(draw, box, key, font, accent, dark, focused=self.__focus == i, background=bg,
+            if not key:
+                continue
+            draw_button(draw, box, key, header, accent, dark,
+                        focused=self.__focus_key == key, background=bg,
                         pressed=self.__pressed_key == key)
-            self.__hits.append(make_hit(box, key, min_w=layout.button_min_width, min_h=layout.button_min_height))
+            self.__hits.append(make_hit(box, key, min_w=layout.button_min_width // 2,
+                                        min_h=layout.button_min_height))
+
+        action_h = (grid_bottom - grid_top - gap) // 2
+        action_h = max(action_h, layout.button_min_height + 12)
+        ax0 = digits_right + gap
+        for j, key in enumerate(self.ACTIONS):
+            y0 = grid_top + j * (action_h + gap)
+            box = Rect(ax0, y0, pad_right - 1, y0 + action_h - 1)
+            draw_button(draw, box, key, header, accent, dark,
+                        focused=self.__focus_key == key, background=bg,
+                        pressed=self.__pressed_key == key)
+            self.__hits.append(make_hit(box, key, min_w=layout.button_min_width,
+                                        min_h=layout.button_min_height))
 
         self.__pressed_key = None
         yield image, 0, 0
@@ -166,10 +204,8 @@ class AccessApp(SelfUpdatingApp):
         target = hit_test(self.__hits, x, y)
         if target is None:
             return False
-        # Disabled targets are filtered by hit_test — silent (no denied click).
         self.__pressed_key = target.action
-        if target.action in self.__keys:
-            self.__focus = self.__keys.index(target.action)
+        self.__focus_key = target.action
         self.__press(target.action, from_touch=True)
         return True
 
@@ -187,23 +223,39 @@ class AccessApp(SelfUpdatingApp):
 
     @override
     def on_key_left(self):
-        self.__focus = (self.__focus - 1) % len(self.__keys)
+        self.__move_focus(-1)
 
     @override
     def on_key_right(self):
-        self.__focus = (self.__focus + 1) % len(self.__keys)
+        self.__move_focus(1)
 
     @override
     def on_key_up(self):
-        self.__focus = (self.__focus - 3) % len(self.__keys)
+        # Prefer vertical step of 3 within digit pad; otherwise previous key.
+        if self.__focus_key in self.DIGITS:
+            i = self.DIGITS.index(self.__focus_key)
+            ni = i - 3
+            if ni >= 0 and self.DIGITS[ni]:
+                self.__focus_key = self.DIGITS[ni]
+                return
+        self.__move_focus(-1)
 
     @override
     def on_key_down(self):
-        self.__focus = (self.__focus + 3) % len(self.__keys)
+        if self.__focus_key in self.DIGITS:
+            i = self.DIGITS.index(self.__focus_key)
+            ni = i + 3
+            if ni < len(self.DIGITS) and self.DIGITS[ni]:
+                self.__focus_key = self.DIGITS[ni]
+                return
+            if self.__focus_key in ('⌫', '0', '7', '8', '9'):
+                self.__focus_key = 'OK'
+                return
+        self.__move_focus(1)
 
     @override
     def on_key_a(self):
-        self.__press(self.__keys[self.__focus], from_touch=False)
+        self.__press(self.__focus_key, from_touch=False)
 
     @override
     def on_key_b(self):
