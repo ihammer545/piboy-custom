@@ -151,6 +151,9 @@ class CrtConfig:
     curvature: float | None = None
     grain_fps: float | None = None
     grain_seed: int = 42
+    # Short V-hold roll when switching tabs (0 disables).
+    tab_roll_s: float = 1.4
+    tab_roll_enabled: bool = True
 
 
 @dataclass

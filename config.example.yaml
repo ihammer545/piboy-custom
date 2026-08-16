@@ -68,6 +68,9 @@ crt: !CrtConfig
   # curvature: 0.009
   # grain_fps: 5
   grain_seed: 42
+  # Vertical V-hold roll when switching tabs (~1–2 s). Set tab_roll_enabled: false to disable.
+  tab_roll_s: 1.4
+  tab_roll_enabled: true
 audio: !AudioConfig
   ui_sounds: !UiSoundsConfig
     enabled: true

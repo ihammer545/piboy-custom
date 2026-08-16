@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from logging.config import fileConfig
@@ -32,6 +33,7 @@ from ports.lock import LockState
 from ports.status import LinkStatus
 from interaction.frame_presenter import RenderGate
 from rendering.crt import CRTRenderer, resolve_crt_settings
+from rendering.tab_roll import apply_tab_roll, compute_tab_roll
 from services.event_log import EventLogService
 from services.terminal import AccessService, DeviceService, IntercomService, SensorService, SystemService
 from services.ui_sound import UiSoundService, UiSoundSettings, open_ui_sound_port
@@ -86,6 +88,11 @@ class AppState:
         self.__boot: BootSequence | None = None
         self.__boot_entered = False
         self.__audio_setup: AudioSetupSession | None = None
+        # Tab-switch V-hold roll (old TV desync), ~1–2 s
+        self.__roll_t0: float | None = None
+        self.__roll_duration = float(crt_cfg.tab_roll_s or 0.0)
+        self.__roll_base: Image.Image | None = None
+        self.__roll_armed = False
 
     @property
     def crt(self) -> CRTRenderer:
@@ -213,6 +220,79 @@ class AppState:
         self.__active_app = index
         self.active_app.on_app_enter()
         self.__sounds.tab()
+        self.begin_tab_roll()
+
+    def begin_tab_roll(self) -> None:
+        """Start short vertical V-hold desync after a tab change."""
+        crt = self.__environment.crt
+        if not crt.tab_roll_enabled or float(crt.tab_roll_s or 0) <= 0:
+            return
+        if self.__boot is not None or self.__audio_setup is not None:
+            return
+        self.__roll_t0 = time.monotonic()
+        self.__roll_duration = float(crt.tab_roll_s)
+        self.__roll_base = None
+
+    @property
+    def tab_roll_active(self) -> bool:
+        if self.__roll_t0 is None:
+            return False
+        return (time.monotonic() - self.__roll_t0) < self.__roll_duration
+
+    def __finish_tab_roll(self) -> None:
+        self.__roll_t0 = None
+        self.__roll_base = None
+
+    def __with_tab_roll(self, frame: Image.Image, *, cache: bool) -> Image.Image:
+        if self.__roll_t0 is None:
+            return frame
+        params = compute_tab_roll(
+            time.monotonic() - self.__roll_t0,
+            duration_s=self.__roll_duration,
+        )
+        if params.done:
+            self.__finish_tab_roll()
+            return frame
+        base = frame
+        if cache:
+            if self.__roll_base is None:
+                self.__roll_base = frame.copy()
+            base = self.__roll_base
+        return apply_tab_roll(base, offset_frac=params.offset_frac, ghost=params.ghost)
+
+    def arm_tab_roll_scheduler(self, display: Display, interval_ms: int = 45) -> None:
+        """Keep redrawing while the tab roll settles (Tk call_later or Pi thread)."""
+        if not self.tab_roll_active or self.__roll_armed:
+            return
+        self.__roll_armed = True
+
+        def tick():
+            if not self.tab_roll_active:
+                self.__roll_armed = False
+                self.__finish_tab_roll()
+                self.update_display(display, partial=False)
+                return
+            self.update_display(display, partial=False)
+            call_later = getattr(display, 'call_later', None)
+            if callable(call_later):
+                call_later(interval_ms, tick)
+
+        call_later = getattr(display, 'call_later', None)
+        if callable(call_later):
+            call_later(interval_ms, tick)
+            return
+
+        def run():
+            try:
+                while self.tab_roll_active:
+                    time.sleep(interval_ms / 1000.0)
+                    self.update_display(display, partial=False)
+                self.__finish_tab_roll()
+                self.update_display(display, partial=False)
+            finally:
+                self.__roll_armed = False
+
+        threading.Thread(target=run, name='tab-roll', daemon=True).start()
 
     def app_content_origin(self) -> tuple[int, int]:
         cfg = self.__environment.app_config
@@ -239,6 +319,7 @@ class AppState:
         if tab is not None and tab.action.startswith('tab:'):
             self.switch_to_app(int(tab.action.split(':', 1)[1]))
             self.update_display(display, partial=False)
+            self.arm_tab_roll_scheduler(display)
             return
         # App content
         ox, oy = self.app_content_origin()
@@ -361,14 +442,25 @@ class AppState:
             try:
                 # GPU path applies CRT in-shader — never run Pillow process().
                 if getattr(display, 'applies_crt', False):
-                    display.show(self.compose_frame(), 0, 0)
+                    if self.tab_roll_active and self.__roll_base is not None:
+                        frame = self.__with_tab_roll(self.__roll_base, cache=False)
+                    else:
+                        frame = self.compose_frame()
+                        frame = self.__with_tab_roll(frame, cache=True)
+                    display.show(frame, 0, 0)
                     return
 
                 overlay = self.__boot is not None or self.__audio_setup is not None
-                if overlay or self.__crt.enabled:
+                if overlay or self.__crt.enabled or self.tab_roll_active:
+                    if self.tab_roll_active and self.__roll_base is not None and self.__crt.enabled:
+                        # Reuse CRT'd snapshot while roll settles (cheap on Pi).
+                        frame = self.__with_tab_roll(self.__roll_base, cache=False)
+                        display.show(frame, 0, 0)
+                        return
                     frame = self.compose_frame()
                     if self.__crt.enabled:
                         frame = self.__crt.process(frame, ui_changed=True)
+                    frame = self.__with_tab_roll(frame, cache=True)
                     display.show(frame, 0, 0)
                     return
 
@@ -576,11 +668,11 @@ class AppState:
         if self.__audio_setup is not None:
             self.__handle_audio_setup_action('next', display)
             return
-        self.active_app.on_app_leave()
-        self.next_app()
-        self.active_app.on_app_enter()
-        self.__sounds.tab()
+        if not self.__apps:
+            return
+        self.switch_to_app((self.__active_app + 1) % len(self.__apps))
         self.update_display(display, partial=False)
+        self.arm_tab_roll_scheduler(display)
 
     def on_rotary_decrease(self, display: Display):
         if self.__try_skip_boot(display):
@@ -588,11 +680,11 @@ class AppState:
         if self.__audio_setup is not None:
             self.__handle_audio_setup_action('next', display)
             return
-        self.active_app.on_app_leave()
-        self.previous_app()
-        self.active_app.on_app_enter()
-        self.__sounds.tab()
+        if not self.__apps:
+            return
+        self.switch_to_app((self.__active_app - 1) % len(self.__apps))
         self.update_display(display, partial=False)
+        self.arm_tab_roll_scheduler(display)
 
 
 def run_boot_then_enter(app_state: AppState, display: Display) -> None:
