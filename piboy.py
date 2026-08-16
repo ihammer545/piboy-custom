@@ -113,9 +113,13 @@ class AppState:
 
     def set_crt_preset(self, preset: str) -> None:
         """Runtime CRT switch for the current process (not persisted)."""
-        self.__crt.apply_preset(preset)
-        if self.__display is not None:
-            self.update_display(self.__display, partial=False)
+        settings = self.__crt.apply_preset(preset)
+        display = self.__display
+        set_settings = getattr(display, 'set_crt_settings', None) if display is not None else None
+        if callable(set_settings):
+            set_settings(settings)
+        if display is not None:
+            self.update_display(display, partial=False)
 
     def bind_display(self, display: Display) -> None:
         self.__display = display
@@ -355,6 +359,11 @@ class AppState:
             if callable(begin):
                 begin()
             try:
+                # GPU path applies CRT in-shader — never run Pillow process().
+                if getattr(display, 'applies_crt', False):
+                    display.show(self.compose_frame(), 0, 0)
+                    return
+
                 overlay = self.__boot is not None or self.__audio_setup is not None
                 if overlay or self.__crt.enabled:
                     frame = self.compose_frame()
@@ -751,10 +760,16 @@ class AppModule(Module):
     def __create_raspberry_display(e: Environment) -> Display:
         from interaction.FramebufferDisplay import FramebufferDisplay, read_fb_size
         from interaction.ILI9486Display import ILI9486Display
+        from rendering.crt import resolve_crt_settings
 
         driver = (e.display_config.driver or 'auto').strip().lower()
         fb_dev = e.display_config.framebuffer_device or '/dev/fb0'
         app_w, app_h = e.app_config.width, e.app_config.height
+        crt_cfg = e.crt
+
+        def make_fb() -> Display:
+            logger.info('Using FramebufferDisplay %s (%sx%s)', fb_dev, app_w, app_h)
+            return FramebufferDisplay(fb_dev, width=app_w, height=app_h)
 
         def use_fb() -> bool:
             if not os.path.exists(fb_dev):
@@ -762,9 +777,43 @@ class AppModule(Module):
             fb_w, fb_h = read_fb_size(fb_dev)
             return fb_w == app_w and fb_h == app_h
 
+        def try_gles() -> Display | None:
+            try:
+                from interaction.GlesCrtDisplay import GlesCrtDisplay
+                settings = resolve_crt_settings(
+                    preset=crt_cfg.preset,
+                    enabled=crt_cfg.enabled,
+                    phosphor_floor=crt_cfg.phosphor_floor,
+                    scanlines=crt_cfg.scanlines,
+                    vignette=crt_cfg.vignette,
+                    grain=crt_cfg.grain,
+                    glare=crt_cfg.glare,
+                    flicker=crt_cfg.flicker,
+                    glow=crt_cfg.glow,
+                    rounded_corners=crt_cfg.rounded_corners,
+                    bezel_inset=crt_cfg.bezel_inset,
+                    curvature=crt_cfg.curvature,
+                    grain_fps=crt_cfg.grain_fps,
+                    grain_seed=crt_cfg.grain_seed,
+                    width=app_w,
+                    height=app_h,
+                )
+                logger.info('Using GlesCrtDisplay (CRT on GPU)')
+                return GlesCrtDisplay(width=app_w, height=app_h, crt_settings=settings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning('GLES display unavailable (%s); falling back', exc)
+                return None
+
+        # Manual gles only until hardware spike is green; auto stays fb/ili for safety.
+        if driver == 'gles':
+            gles = try_gles()
+            if gles is not None:
+                return gles
+            if use_fb():
+                return make_fb()
+
         if driver == 'framebuffer' or (driver == 'auto' and use_fb()):
-            logger.info('Using FramebufferDisplay %s (%sx%s)', fb_dev, app_w, app_h)
-            return FramebufferDisplay(fb_dev, width=app_w, height=app_h)
+            return make_fb()
 
         logger.info('Using ILI9486Display (SPI)')
         spi_device_config = e.display_config.display_device
@@ -784,6 +833,7 @@ class AppModule(Module):
             return self.__unified_instance
         if e.backend_mode == BackendMode.RASPBERRY:
             from interaction.FramebufferDisplay import FramebufferDisplay
+            from interaction.GlesCrtDisplay import GlesCrtDisplay
             from interaction.ILI9486Display import ILI9486Display
             from interaction.NullInput import NullInput
 
@@ -794,9 +844,7 @@ class AppModule(Module):
             from interaction.GPIOInput import GPIOInput
 
             def reset_and_init():
-                if isinstance(display, ILI9486Display):
-                    display.reset()
-                elif isinstance(display, FramebufferDisplay):
+                if isinstance(display, (ILI9486Display, FramebufferDisplay, GlesCrtDisplay)):
                     display.reset()
                 display.show(state.clear_buffer(), 0, 0)
 

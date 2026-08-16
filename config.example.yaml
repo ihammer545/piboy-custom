@@ -1,11 +1,12 @@
 !Environment
 backend: simulator
 dev_mode: true
-# On Raspberry Pi with 5\" 800×480 framebuffer:
+# On Raspberry Pi with 5\" 800×480:
 # backend: raspberry
 # dev_mode: false
 # display_config: !DisplayConfig
-#   driver: auto   # or framebuffer | ili9486
+#   driver: framebuffer   # safe default (CPU CRT if crt enabled)
+#   # driver: gles        # GPU CRT — only after scripts/spike_gles_kms.py is green
 #   framebuffer_device: /dev/fb0
 app_config: !AppConfig
   width: 800
@@ -49,7 +50,7 @@ input: !InputConfig
     debounce_ms: 40
     enabled: true
 crt: !CrtConfig
-  # На Raspberry Pi / framebuffer лучше off — subtle даёт ~0.5–1s задержку на тап.
+  # framebuffer + CPU CRT: use off on Pi 3 (slow). gles driver: subtle is OK.
   preset: off
   # preset: subtle
   # Optional overrides (null = use preset defaults):

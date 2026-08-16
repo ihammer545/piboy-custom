@@ -7,9 +7,14 @@ Wants=network-online.target
 Type=simple
 User=ihammer
 Group=ihammer
+# DRI/KMS + framebuffer + touch
+SupplementaryGroups=video render input
 WorkingDirectory=/home/ihammer/piboy
 # + = run as root (unbind fbcon); required to kill the blinking console cursor
 ExecStartPre=+/home/ihammer/piboy/scripts/hide-fb-cursor.sh
+# For display_config.driver: gles
+Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=SDL_OPENGL_ES_DRIVER=1
 ExecStart=/home/ihammer/piboy/.venv/bin/python -u /home/ihammer/piboy/piboy.py
 Restart=on-failure
 RestartSec=2

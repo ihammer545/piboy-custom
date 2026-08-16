@@ -3,7 +3,9 @@
 ## Overview
 
 `CRTRenderer` (`rendering/crt.py`) post-processes the composed **800×480** UI frame
-before `Display.show`. The simulator side panel is never processed.
+before `Display.show` on the **simulator / framebuffer CPU path**.
+On Raspberry Pi with `display_config.driver: gles`, the same look is applied in a
+**GPU fragment shader** instead (see [GPU path](#gpu-path-on-raspberry-pi)).
 
 ```
 UI Apps + chrome → AppState.compose_frame() → CRTRenderer → Display
@@ -102,15 +104,84 @@ Preview PNGs: `docs/crt/{off,subtle,strong,calibration}.png`
 
 ## Pi 3A+ recommendation
 
+**Framebuffer (CPU CRT)** — keep CRT light or off:
+
 ```yaml
+display_config: !DisplayConfig
+  driver: framebuffer
+crt: !CrtConfig
+  preset: off          # or subtle with curvature: 0, grain: 0 on slow Pi
+```
+
+**GPU CRT (OpenGL ES)** — after the KMS spike is green:
+
+```yaml
+display_config: !DisplayConfig
+  driver: gles
 crt: !CrtConfig
   preset: subtle
   glow: 0
-  grain_fps: 3
-  curvature: 0.009   # or 0 if CPU-bound
 ```
 
-Disable: `preset: off`.
+Disable CRT entirely: `preset: off` (GPU passthrough or CPU identity).
+
+## GPU path on Raspberry Pi
+
+UI is still composed with Pillow. CRT runs in a **GLES fragment shader**
+([`interaction/GlesCrtDisplay.py`](../interaction/GlesCrtDisplay.py),
+[`rendering/shaders/crt.frag`](../rendering/shaders/crt.frag)).
+
+```
+compose_frame → GlesCrtDisplay staging → GL present thread → KMSDRM
+touch → crt_geometry.display_to_ui (same barrel math as the shader)
+```
+
+### Dependencies
+
+```bash
+sudo apt-get install -y libsdl2-2.0-0 libegl1 libgles2 \
+  libsdl2-dev libegl-dev libgles-dev   # if pygame builds from source
+cd ~/piboy
+.venv/bin/pip install -r requirements-pi.txt   # includes pygame, PyOpenGL
+```
+
+User groups: `video`, `render`, `input`.
+
+### Hardware spike (required before trusting gles)
+
+Stop piboy, then:
+
+```bash
+SDL_VIDEODRIVER=kmsdrm .venv/bin/python scripts/spike_gles_kms.py
+```
+
+| Result | Action |
+|--------|--------|
+| Green clear / pattern on panel, clean exit, fb piboy still works | set `driver: gles` |
+| Black screen / hang / DRM busy | keep `driver: framebuffer` |
+
+Document the outcome here as **Pi GLES status**: _pending on device_ (fill in after spike).
+
+### systemd
+
+See [`deploy/piboy.service`](../deploy/piboy.service): `SupplementaryGroups=video render input`,
+`SDL_VIDEODRIVER=kmsdrm`, `ExecStartPre` hide-fb-cursor.
+
+### Profiling
+
+```bash
+PIBOY_GL_PROFILE=1 .venv/bin/python piboy.py
+```
+
+### Acceptance checklist (GPU vs Mac Pillow subtle)
+
+- [ ] Dark areas show phosphor / faint grain
+- [ ] Header text readable
+- [ ] Scanlines visible on mid-tones
+- [ ] Vignette at corners
+- [ ] Curvature at edges; corner tap hits the intended control
+- [ ] Grain moves for ~1s without touching the screen
+- [ ] `preset: off` looks flat; switching preset updates the panel
 
 ## Manual check (UTM)
 
