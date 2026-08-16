@@ -7,6 +7,7 @@ import logging
 import mmap
 import os
 import threading
+import time
 from pathlib import Path
 
 from PIL import Image
@@ -127,24 +128,38 @@ def restore_fb_console(tty_fd: int | None, unbound: list[Path] | None = None) ->
 
 def rgb_image_to_rgb565(image: Image.Image) -> bytes:
     """Convert a PIL RGB image to little-endian RGB565 bytes."""
-    if _HAS_NUMPY:
-        arr = np.asarray(image.convert('RGB'), dtype=np.uint16)
-        r = arr[:, :, 0]
-        g = arr[:, :, 1]
-        b = arr[:, :, 2]
-        rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        return rgb565.astype('<u2').tobytes()
+    if not _HAS_NUMPY:
+        # Pure-Python pack is ~1s for 800×480 on Pi 3 — keep for tests only.
+        rgb = image.convert('RGB').tobytes()
+        out = bytearray((len(rgb) // 3) * 2)
+        j = 0
+        for i in range(0, len(rgb), 3):
+            r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
+            v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+            out[j] = v & 0xFF
+            out[j + 1] = (v >> 8) & 0xFF
+            j += 2
+        return bytes(out)
 
-    rgb = image.convert('RGB').tobytes()
-    out = bytearray((len(rgb) // 3) * 2)
-    j = 0
-    for i in range(0, len(rgb), 3):
-        r, g, b = rgb[i], rgb[i + 1], rgb[i + 2]
-        v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        out[j] = v & 0xFF
-        out[j + 1] = (v >> 8) & 0xFF
-        j += 2
-    return bytes(out)
+    # Contiguous uint8 RGB → uint16 RGB565 (vectorized).
+    arr = np.asarray(image.convert('RGB'), dtype=np.uint8)
+    r = arr[:, :, 0].astype(np.uint16)
+    g = arr[:, :, 1].astype(np.uint16)
+    b = arr[:, :, 2].astype(np.uint16)
+    rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+    return np.ascontiguousarray(rgb565, dtype='<u2').tobytes()
+
+
+def read_fb_line_length(device: str = '/dev/fb0') -> int:
+    try:
+        name = Path(device).name
+        return int(Path(f'/sys/class/graphics/{name}/stride').read_text().strip())
+    except Exception:  # noqa: BLE001
+        try:
+            name = Path(device).name
+            return int(Path(f'/sys/class/graphics/{name}/line_length').read_text().strip())
+        except Exception:  # noqa: BLE001
+            return 0
 
 
 def read_fb_size(device: str = '/dev/fb0') -> tuple[int, int]:
@@ -176,12 +191,18 @@ class FramebufferDisplay(Display):
         self.__width = int(width)
         self.__height = int(height)
         self.__bpp = 2  # RGB565
-        self.__line_length = self.__width * self.__bpp
+        stride = read_fb_line_length(device)
+        self.__line_length = stride if stride >= self.__width * self.__bpp else self.__width * self.__bpp
         fb_w, fb_h = read_fb_size(device)
         if fb_w and fb_h and (fb_w != self.__width or fb_h != self.__height):
             logger.warning(
                 'Framebuffer %s is %sx%s but app is %sx%s — using app size',
                 device, fb_w, fb_h, self.__width, self.__height,
+            )
+        if not _HAS_NUMPY:
+            logger.error(
+                'numpy is not installed — RGB565 fallback is VERY slow on Pi '
+                '(~1s/frame). Fix: .venv/bin/pip install numpy'
             )
         self.__console_tty_fd, self.__unbound_vt = suppress_fb_console()
         self.__fd = os.open(device, os.O_RDWR)
@@ -191,7 +212,11 @@ class FramebufferDisplay(Display):
         self.__canvas = Image.new('RGB', (self.__width, self.__height), (0, 0, 0))
         self.__defer_flush = 0
         self.__dirty: tuple[int, int, int, int] | None = None  # x0,y0,x1,y1 inclusive-exclusive
-        logger.info('FramebufferDisplay %s %sx%s rgb565', device, self.__width, self.__height)
+        self.__profile = os.environ.get('PIBOY_FB_PROFILE', '').strip() in ('1', 'true', 'yes')
+        logger.info(
+            'FramebufferDisplay %s %sx%s rgb565 stride=%s numpy=%s',
+            device, self.__width, self.__height, self.__line_length, _HAS_NUMPY,
+        )
 
     @property
     def size(self) -> tuple[int, int]:
@@ -223,10 +248,13 @@ class FramebufferDisplay(Display):
         self.__dirty = (min(dx0, x0), min(dy0, y0), max(dx1, x1), max(dy1, y1))
 
     def __flush_full(self) -> None:
+        t0 = time.perf_counter() if self.__profile else 0.0
         data = rgb_image_to_rgb565(self.__canvas)
         self.__mm.seek(0)
         self.__mm.write(data)
         self.__dirty = None
+        if self.__profile:
+            logger.info('fb flush full %sms', round((time.perf_counter() - t0) * 1000, 1))
 
     def __flush_region(self, x0: int, y0: int, x1: int, y1: int) -> None:
         w = x1 - x0
@@ -236,6 +264,7 @@ class FramebufferDisplay(Display):
         if x0 == 0 and y0 == 0 and x1 == self.__width and y1 == self.__height:
             self.__flush_full()
             return
+        t0 = time.perf_counter() if self.__profile else 0.0
         crop = self.__canvas.crop((x0, y0, x1, y1))
         data = rgb_image_to_rgb565(crop)
         row_bytes = w * self.__bpp
@@ -244,7 +273,11 @@ class FramebufferDisplay(Display):
             start = row * row_bytes
             self.__mm.seek(offset)
             self.__mm.write(data[start:start + row_bytes])
-
+        if self.__profile:
+            logger.info(
+                'fb flush region %sx%s @%s,%s %sms',
+                w, h, x0, y0, round((time.perf_counter() - t0) * 1000, 1),
+            )
     def __flush_dirty(self) -> None:
         if self.__dirty is None:
             return

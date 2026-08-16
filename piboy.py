@@ -363,16 +363,18 @@ class AppState:
                     display.show(frame, 0, 0)
                     return
 
-                image = self.clear_buffer()
                 app_bbox = (self.__environment.app_config.app_side_offset,
                             self.__environment.app_config.app_top_offset,
                             self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
                             self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
                 x_offset, y_offset = app_bbox[0:2]
                 if partial:
+                    # Reuse buffer — avoid full black clear on every tap (costly on Pi).
+                    image = self.image_buffer
                     for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
                         display.show(patch, x0 + x_offset, y0 + y_offset)
                 else:
+                    image = self.clear_buffer()
                     for patch, x0, y0 in draw_base(image, self):
                         display.show(patch, x0, y0)
                     for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
