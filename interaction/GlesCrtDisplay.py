@@ -67,6 +67,7 @@ class GlesCrtDisplay(Display):
 
         os.environ.setdefault('SDL_VIDEODRIVER', 'kmsdrm')
         os.environ.setdefault('SDL_OPENGL_ES_DRIVER', '1')
+        os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
         self.__thread = threading.Thread(target=self.__present_loop, name='gles-present', daemon=True)
         self.__thread.start()
@@ -192,10 +193,8 @@ class GlesCrtDisplay(Display):
 
     def __init_gl(self) -> None:
         import pygame
-        from OpenGL import GL
 
         self.__pygame = pygame
-        self.__gl = GL
 
         pygame.init()
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 2)
@@ -210,6 +209,9 @@ class GlesCrtDisplay(Display):
             pygame.OPENGL | pygame.FULLSCREEN | pygame.DOUBLEBUF,
             vsync=1,
         )
+        # Import after context exists; force EGL on Pi KMS.
+        from OpenGL import GL
+        self.__gl = GL
         GL.glViewport(0, 0, self.__width, self.__height)
 
         vert = (_SHADER_DIR / 'crt.vert').read_text()

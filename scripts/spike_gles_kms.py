@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
 """
-Phase-0 hardware spike: SDL2 KMSDRM + OpenGL ES fullscreen clear (+ optional textured quad).
+Phase-0 hardware spike: SDL2 KMSDRM + OpenGL ES fullscreen clear (+ textured quad).
 
-Run on shelter-terminal (stop piboy first):
+  SDL_VIDEODRIVER=kmsdrm PYOPENGL_PLATFORM=egl \\
+    .venv/bin/python -u scripts/spike_gles_kms.py
 
-  sudo apt-get install -y libsdl2-2.0-0 libegl1 libgles2 \\
-      libsdl2-dev libegl-dev libgles-dev
-
-  cd ~/piboy
-  .venv/bin/pip install 'pygame>=2.5' 'PyOpenGL>=3.1'
-  # hide console cursor if needed:
-  #   sudo bash scripts/hide-fb-cursor.sh
-  SDL_VIDEODRIVER=kmsdrm .venv/bin/python scripts/spike_gles_kms.py
-
-Go: green clear visible on 5\" panel, clean exit, then framebuffer piboy still works.
+Go: green clear visible on 5\" panel (+ optional GLES SPIKE OK text).
 Exit: 0 ok, 1 runtime fail, 2 missing deps.
 """
 
@@ -52,16 +44,17 @@ def _compile(gl, vert_src: str, frag_src: str):
 def main() -> int:
     os.environ.setdefault('SDL_VIDEODRIVER', 'kmsdrm')
     os.environ.setdefault('SDL_OPENGL_ES_DRIVER', '1')
+    os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
     try:
         import pygame
-        from OpenGL import GL
     except ImportError as exc:
         print(f'missing dependency: {exc}', file=sys.stderr)
         return 2
 
     width, height = 800, 480
     print(f'SDL_VIDEODRIVER={os.environ.get("SDL_VIDEODRIVER")}')
+    print(f'PYOPENGL_PLATFORM={os.environ.get("PYOPENGL_PLATFORM")}')
     pygame.init()
     try:
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 2)
@@ -81,11 +74,24 @@ def main() -> int:
         pygame.quit()
         return 1
 
-    print('window ok — clear green 2s')
-    GL.glViewport(0, 0, width, height)
-    GL.glClearColor(0.05, 0.45, 0.08, 1.0)
-    GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-    pygame.display.flip()
+    # Import OpenGL only after SDL created an EGL context.
+    try:
+        from OpenGL import GL
+    except ImportError as exc:
+        print(f'missing PyOpenGL: {exc}', file=sys.stderr)
+        pygame.quit()
+        return 2
+
+    print('window ok — clear green 2s (watch the panel!)')
+    try:
+        GL.glViewport(0, 0, width, height)
+        GL.glClearColor(0.05, 0.45, 0.08, 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+        pygame.display.flip()
+    except Exception as exc:  # noqa: BLE001
+        print(f'clear failed: {exc}', file=sys.stderr)
+        pygame.quit()
+        return 1
     time.sleep(2.0)
 
     shader_dir = Path(__file__).resolve().parent.parent / 'rendering' / 'shaders'
@@ -122,17 +128,17 @@ def main() -> int:
         loc_pos = GL.glGetAttribLocation(prog, 'a_pos')
         loc_uv = GL.glGetAttribLocation(prog, 'a_uv')
         GL.glEnableVertexAttribArray(loc_pos)
-        GL.glVertexAttribPointer(loc_pos, 2, GL.GL_FLOAT, False, 16, None)
+        GL.glVertexAttribPointer(loc_pos, 2, GL.GL_FLOAT, False, 16, ctypes.c_void_p(0))
         GL.glEnableVertexAttribArray(loc_uv)
         GL.glVertexAttribPointer(loc_uv, 2, GL.GL_FLOAT, False, 16, ctypes.c_void_p(8))
         GL.glUniform1i(GL.glGetUniformLocation(prog, 'u_tex'), 0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
         pygame.display.flip()
-        print('textured passthrough — hold 3s (Esc to skip)')
+        print('textured passthrough — hold 3s')
     except Exception as exc:  # noqa: BLE001
         print(f'texture phase skipped: {exc}')
-        print('(clear-only is enough to validate KMS if green was visible)')
+        print('(Did you see GREEN on the 5\" panel? That alone = KMS hit the display.)')
 
     deadline = time.time() + 3.0
     while time.time() < deadline:
@@ -145,8 +151,7 @@ def main() -> int:
 
     pygame.display.quit()
     pygame.quit()
-    print('CLEAN EXIT — re-test: .venv/bin/python piboy.py with driver framebuffer')
-    print('If OK: set display_config.driver: gles and crt.preset: subtle')
+    print('CLEAN EXIT')
     return 0
 
 

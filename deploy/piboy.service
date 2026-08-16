@@ -15,6 +15,7 @@ ExecStartPre=+/home/ihammer/piboy/scripts/hide-fb-cursor.sh
 # For display_config.driver: gles
 Environment=SDL_VIDEODRIVER=kmsdrm
 Environment=SDL_OPENGL_ES_DRIVER=1
+Environment=PYOPENGL_PLATFORM=egl
 ExecStart=/home/ihammer/piboy/.venv/bin/python -u /home/ihammer/piboy/piboy.py
 Restart=on-failure
 RestartSec=2
