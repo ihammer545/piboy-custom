@@ -22,13 +22,14 @@ logger = logging.getLogger('piboy.ui_sound')
 DEFAULT_SOUNDS_DIR = Path('resources') / 'sounds'
 
 # Click-like events subject to interval debounce and preferential drop.
-_CLICK_EVENTS = frozenset({UiSoundEvent.KEY, UiSoundEvent.TOUCH})
+_CLICK_EVENTS = frozenset({UiSoundEvent.KEY, UiSoundEvent.TOUCH, UiSoundEvent.TAB})
 _PRIORITY = {
     UiSoundEvent.BOOT: 6,
     UiSoundEvent.LOCK: 5,
     UiSoundEvent.DENIED: 4,
     UiSoundEvent.CONFIRM: 3,
     UiSoundEvent.BACK: 2,
+    UiSoundEvent.TAB: 2,
     UiSoundEvent.KEY: 1,
     UiSoundEvent.TOUCH: 1,
 }
@@ -127,11 +128,16 @@ class UiSoundService:
         self.__preloaded = True
 
     def __reload_samples(self) -> None:
+        # Click1 = tab switch; Click2 = other UI button clicks.
+        # Prefer preconverted .wav (Pi-safe); fall back to .mp3 names if present.
+        click1 = ['Click1.wav', 'Click1.mp3']
+        click2 = ['Click2.wav', 'Click2.mp3']
         mapping = {
-            UiSoundEvent.KEY: ['key_a.wav', 'key_b.wav', 'key_c.wav'],
-            UiSoundEvent.TOUCH: ['touch_a.wav', 'touch_b.wav', 'touch_c.wav'],
-            UiSoundEvent.CONFIRM: ['confirm.wav'],
-            UiSoundEvent.BACK: ['back.wav'],
+            UiSoundEvent.TAB: click1,
+            UiSoundEvent.KEY: click2,
+            UiSoundEvent.TOUCH: click2,
+            UiSoundEvent.CONFIRM: click2,
+            UiSoundEvent.BACK: click2,
             UiSoundEvent.DENIED: ['denied.wav'],
             UiSoundEvent.LOCK: ['lock.wav'],
             UiSoundEvent.BOOT: ['boot.wav'],
@@ -144,9 +150,12 @@ class UiSoundService:
             for name in names:
                 path = self.__sounds_dir / name
                 if not path.is_file():
-                    logger.warning('UI sound missing: %s', path)
                     continue
-                raw = self._load_wav(path)
+                try:
+                    raw = self._load_audio(path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning('UI sound load failed %s: %s', path, exc)
+                    continue
                 pcm = prepare_pcm_for_device(
                     raw.pcm,
                     src_rate=raw.rate,
@@ -155,7 +164,9 @@ class UiSoundService:
                     dst_channels=dst_ch,
                 )
                 loaded.append(_Sample(pcm=pcm, rate=dst_rate, channels=dst_ch))
+                break  # one sample per event (first existing file)
             if not loaded:
+                logger.warning('UI sound missing for %s (tried %s)', event.value, names)
                 raw = self._synth_click(event)
                 pcm = prepare_pcm_for_device(
                     raw.pcm,
@@ -192,6 +203,9 @@ class UiSoundService:
 
     def touch(self) -> None:
         self.play(UiSoundEvent.TOUCH)
+
+    def tab(self) -> None:
+        self.play(UiSoundEvent.TAB)
 
     def confirm(self) -> None:
         self.play(UiSoundEvent.CONFIRM)
@@ -342,6 +356,42 @@ class UiSoundService:
             pass
 
     @staticmethod
+    def _load_audio(path: Path) -> _Sample:
+        suffix = path.suffix.lower()
+        if suffix == '.wav':
+            return UiSoundService._load_wav(path)
+        if suffix == '.mp3':
+            return UiSoundService._load_mp3(path)
+        raise ValueError(f'unsupported UI sound format: {path}')
+
+    @staticmethod
+    def _load_mp3(path: Path) -> _Sample:
+        """Decode MP3 → mono 16-bit WAV via ffmpeg/afconvert when available."""
+        import shutil
+        import subprocess
+        import tempfile
+
+        ffmpeg = shutil.which('ffmpeg')
+        afconvert = shutil.which('afconvert')
+        with tempfile.TemporaryDirectory(prefix='piboy-ui-sound-') as tmp:
+            out = Path(tmp) / 'out.wav'
+            if ffmpeg:
+                cmd = [
+                    ffmpeg, '-y', '-i', str(path),
+                    '-ac', '1', '-ar', '22050', '-sample_fmt', 's16',
+                    str(out),
+                ]
+            elif afconvert:
+                cmd = [
+                    afconvert, '-f', 'WAVE', '-d', 'LEI16@22050', '-c', '1',
+                    str(path), str(out),
+                ]
+            else:
+                raise RuntimeError('no mp3 decoder (install ffmpeg) — use Click*.wav')
+            subprocess.run(cmd, check=True, capture_output=True)
+            return UiSoundService._load_wav(out)
+
+    @staticmethod
     def _load_wav(path: Path) -> _Sample:
         with wave.open(str(path), 'rb') as wf:
             channels = wf.getnchannels()
@@ -380,6 +430,7 @@ class UiSoundService:
         freq = {
             UiSoundEvent.KEY: 1800,
             UiSoundEvent.TOUCH: 1400,
+            UiSoundEvent.TAB: 1600,
             UiSoundEvent.CONFIRM: 900,
             UiSoundEvent.BACK: 700,
             UiSoundEvent.DENIED: 220,

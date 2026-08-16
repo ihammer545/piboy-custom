@@ -212,7 +212,7 @@ class AppState:
         self.active_app.on_app_leave()
         self.__active_app = index
         self.active_app.on_app_enter()
-        self.__sounds.touch()
+        self.__sounds.tab()
 
     def app_content_origin(self) -> tuple[int, int]:
         cfg = self.__environment.app_config
@@ -579,7 +579,7 @@ class AppState:
         self.active_app.on_app_leave()
         self.next_app()
         self.active_app.on_app_enter()
-        self.__sounds.touch()
+        self.__sounds.tab()
         self.update_display(display, partial=False)
 
     def on_rotary_decrease(self, display: Display):
@@ -591,7 +591,7 @@ class AppState:
         self.active_app.on_app_leave()
         self.previous_app()
         self.active_app.on_app_enter()
-        self.__sounds.touch()
+        self.__sounds.tab()
         self.update_display(display, partial=False)
 
 

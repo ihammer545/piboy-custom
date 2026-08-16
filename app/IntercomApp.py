@@ -180,7 +180,7 @@ class IntercomApp(SelfUpdatingApp):
         peers = self.__peers_ordered()
         session = self.__intercom.session()
 
-        btn_h = layout.button_min_height
+        btn_h = layout.button_min_height + 16
         status_h = layout.line_height + layout.gap
         cutaway = Rect(
             layout.pad,

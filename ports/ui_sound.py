@@ -9,6 +9,7 @@ from typing import Protocol
 class UiSoundEvent(Enum):
     KEY = 'key'
     TOUCH = 'touch'
+    TAB = 'tab'
     CONFIRM = 'confirm'
     BACK = 'back'
     DENIED = 'denied'

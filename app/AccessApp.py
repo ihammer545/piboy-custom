@@ -5,7 +5,7 @@ from injector import inject
 from PIL import Image, ImageDraw
 
 from app.App import SelfUpdatingApp
-from app.ui_kit import draw_button, make_hit
+from app.ui_kit import draw_button, fit_text, make_hit
 from core.decorator import override
 from environment import AppConfig
 from interaction.touch.events import HitTarget, Rect, hit_test
@@ -146,18 +146,19 @@ class AccessApp(SelfUpdatingApp):
         draw_button(draw, pulse_box, lock_label, header, accent, dark,
                     focused=lock_state == LockState.PULSING, background=bg)
 
-        y = layout.pad + layout.line_height * 2 + layout.gap
-        draw.text((layout.pad, y), f'Статус: {self.__ui_state.value}', fill=accent, font=font)
-        y += layout.line_height
+        # One fixed status line (message/scenario never push the keypad).
+        status_y = layout.pad + layout.line_height * 2 + layout.gap
         if self.__message:
-            draw.text((layout.pad, y), self.__message, fill=accent, font=font)
-            y += layout.line_height
-        if self.__scenario:
-            draw.text((layout.pad, y), f'Сценарий: {self.__scenario}', fill=accent, font=font)
-            y += layout.line_height
+            status = self.__message
+            if self.__scenario:
+                status = f'{status} · {self.__scenario}'
+        else:
+            status = self.__ui_state.value
+        status_line = fit_text(font, f'Статус: {status}', width - 2 * layout.pad)
+        draw.text((layout.pad, status_y), status_line, fill=accent, font=font)
 
         # Keypad: taller / narrower digit cells on the left; OK + Сброс stacked on the right.
-        grid_top = y + layout.gap
+        grid_top = status_y + layout.line_height + layout.gap
         grid_bottom = height - layout.pad
         gap = max(6, layout.gap - 2)
         action_w = max(120, (width * 2) // 5)
