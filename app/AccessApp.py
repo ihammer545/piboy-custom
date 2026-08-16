@@ -38,7 +38,7 @@ class AccessApp(SelfUpdatingApp):
         self.__digits = ''
         self.__mask_char = '●'
         self.__ui_state = AccessUiState.IDLE
-        self.__message = 'Введите код'
+        self.__message = ''
         self.__scenario = ''
         # Focus index into DIGITS+ACTIONS (skip empty pad cells)
         self.__focus_key = '1'
@@ -68,7 +68,7 @@ class AccessApp(SelfUpdatingApp):
     def __clear_code(self):
         self.__digits = ''
         self.__ui_state = AccessUiState.IDLE
-        self.__message = 'Введите код'
+        self.__message = ''
         self.__scenario = ''
 
     def __press(self, key: str, *, from_touch: bool = False):
@@ -82,7 +82,7 @@ class AccessApp(SelfUpdatingApp):
             self.__sounds.back()
             self.__digits = self.__digits[:-1]
             self.__ui_state = AccessUiState.IDLE
-            self.__message = 'Введите код'
+            self.__message = ''
             return
         if key == 'OK':
             self.__sounds.confirm()
@@ -95,7 +95,7 @@ class AccessApp(SelfUpdatingApp):
                 self.__sounds.key()
             self.__digits += key
             self.__ui_state = AccessUiState.IDLE
-            self.__message = 'Введите код'
+            self.__message = ''
 
     def __submit(self):
         self.__ui_state = AccessUiState.CHECKING
@@ -142,20 +142,22 @@ class AccessApp(SelfUpdatingApp):
         lock_state = self.__access.lock_state()
         lock_label = 'ИМПУЛЬС' if lock_state == LockState.PULSING else 'ЗАКРЫТ'
         pulse_box = Rect(width - 180, layout.pad, width - layout.pad, layout.pad + layout.button_min_height)
-        draw_button(draw, pulse_box, lock_label, font, accent, dark,
-                    focused=lock_state == LockState.PULSING, background=bg, disabled=True)
+        # Status badge (not tappable): full accent when locked; filled when pulsing.
+        draw_button(draw, pulse_box, lock_label, header, accent, dark,
+                    focused=lock_state == LockState.PULSING, background=bg)
 
-        y = layout.pad + layout.line_height * 3
+        y = layout.pad + layout.line_height * 2 + layout.gap
         draw.text((layout.pad, y), f'Статус: {self.__ui_state.value}', fill=accent, font=font)
         y += layout.line_height
-        draw.text((layout.pad, y), self.__message, fill=accent, font=font)
-        if self.__scenario:
+        if self.__message:
+            draw.text((layout.pad, y), self.__message, fill=accent, font=font)
             y += layout.line_height
+        if self.__scenario:
             draw.text((layout.pad, y), f'Сценарий: {self.__scenario}', fill=accent, font=font)
+            y += layout.line_height
 
         # Keypad: taller / narrower digit cells on the left; OK + Сброс stacked on the right.
-        info_bottom = y + layout.line_height + layout.gap
-        grid_top = max(info_bottom, height // 3)
+        grid_top = y + layout.gap
         grid_bottom = height - layout.pad
         gap = max(6, layout.gap - 2)
         action_w = max(120, (width * 2) // 5)
@@ -168,8 +170,9 @@ class AccessApp(SelfUpdatingApp):
         btn_w = (digits_width - (cols - 1) * gap) // cols
         # Keep digit keys narrow for one-finger taps; leave slack toward the action column.
         btn_w = min(btn_w, 100)
-        btn_h = (grid_bottom - grid_top - (rows - 1) * gap) // rows
-        btn_h = max(btn_h, layout.button_min_height + 16)
+        # Fit all 4 rows inside the app area (do not force taller than available).
+        btn_h = max(layout.button_min_height,
+                    (grid_bottom - grid_top - (rows - 1) * gap) // rows)
 
         for i, key in enumerate(self.DIGITS):
             row, col = divmod(i, cols)
@@ -184,8 +187,8 @@ class AccessApp(SelfUpdatingApp):
             self.__hits.append(make_hit(box, key, min_w=layout.button_min_width // 2,
                                         min_h=layout.button_min_height))
 
-        action_h = (grid_bottom - grid_top - gap) // 2
-        action_h = max(action_h, layout.button_min_height + 12)
+        action_h = max(layout.button_min_height,
+                       (grid_bottom - grid_top - gap) // 2)
         ax0 = digits_right + gap
         for j, key in enumerate(self.ACTIONS):
             y0 = grid_top + j * (action_h + gap)

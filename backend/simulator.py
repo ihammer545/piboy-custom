@@ -48,9 +48,10 @@ class SimulatorBackend(LockPort, AccessPort, IntercomPort, DevicePort, SensorPor
         self.__pulse_timer: threading.Timer | None = None
 
         self.__peers: dict[str, PeerInfo] = {
-            'bunker': PeerInfo('bunker', 'Бункер', PeerPresence.ONLINE),
-            'floor1': PeerInfo('floor1', '1 этаж', PeerPresence.ONLINE),
             'floor2': PeerInfo('floor2', '2 этаж', PeerPresence.OFFLINE),
+            'floor1_a': PeerInfo('floor1_a', '1эт · А', PeerPresence.ONLINE),
+            'floor1_b': PeerInfo('floor1_b', '1эт · Б', PeerPresence.ONLINE),
+            'bunker': PeerInfo('bunker', 'Подвал', PeerPresence.ONLINE),
         }
         self.__session = CallSession(CallPhase.IDLE)
         self.__connect_timer: threading.Timer | None = None

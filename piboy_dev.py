@@ -41,7 +41,7 @@ if __name__ == '__main__':
         if action == 'incoming_bunker':
             intercom.simulate_incoming('bunker')
         elif action == 'incoming_floor1':
-            intercom.simulate_incoming('floor1')
+            intercom.simulate_incoming('floor1_a')
         elif action == 'toggle_floor2':
             peers = {p.peer_id: p for p in intercom.peers()}
             peer = peers.get('floor2')

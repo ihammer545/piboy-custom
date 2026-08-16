@@ -74,12 +74,12 @@ def test_intercom_outbound_state_machine():
 def test_intercom_incoming_accept_reject():
     backend, _ = _backend()
     intercom = IntercomService(backend)
-    session = intercom.simulate_incoming('floor1')
+    session = intercom.simulate_incoming('floor1_a')
     assert session.phase == CallPhase.RINGING
     intercom.reject()
     assert intercom.session().phase == CallPhase.ENDED
 
-    intercom.simulate_incoming('floor1')
+    intercom.simulate_incoming('floor1_a')
     intercom.accept()
     deadline = time.time() + 2.0
     while time.time() < deadline and intercom.session().phase != CallPhase.CONNECTED:

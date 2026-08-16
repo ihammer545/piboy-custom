@@ -116,8 +116,8 @@ class SelfManagedTkInteraction(UnifiedInteraction):
         sim_label.grid(row=6, column=1, columnspan=3, sticky='w', padx=8, pady=(12, 2))
 
         sim_actions = [
-            ('Входящий: Бункер', 'incoming_bunker'),
-            ('Входящий: 1 этаж', 'incoming_floor1'),
+            ('Входящий: Подвал', 'incoming_bunker'),
+            ('Входящий: 1эт А', 'incoming_floor1'),
             ('2 этаж online/off', 'toggle_floor2'),
             ('Датчик offline', 'sensor_offline'),
             ('Датчик online', 'sensor_online'),
